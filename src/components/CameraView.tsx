@@ -25,6 +25,7 @@ const CameraView: React.FC<CameraViewProps> = ({ videoRef, isMonitoring }) => {
         muted
         width={320} 
         height={240}
+        style={{ transform: 'scaleX(-1)' }}
       />
     </div>
   );

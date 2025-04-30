@@ -4,13 +4,14 @@ interface HeartRateDisplayProps {
   bpm: number;
   isMonitoring: boolean;
   isFaceDetected: boolean;
+  isMonitoringBtn: boolean
 }
 
-const HeartRateDisplay: React.FC<HeartRateDisplayProps> = ({ bpm, isMonitoring, isFaceDetected }) => {
+const HeartRateDisplay: React.FC<HeartRateDisplayProps> = ({ bpm, isMonitoring, isFaceDetected, isMonitoringBtn }) => {
   const getBPMStatus = () => {
+    if (bpm === 0 && isFaceDetected && isMonitoringBtn) return { text: 'Face Detected, Calculating BPM...', color: 'text-gray-500' };
     if (bpm === 0 && isFaceDetected) return { text: 'Face Detected', color: 'text-gray-500' };
-    if (bpm === 0 && isFaceDetected && isMonitoring) return { text: 'Face Detected, Calculating BPM...', color: 'text-gray-500' };
-    if (bpm === 0) return { text: 'Not detected', color: 'text-gray-500' };
+    if (bpm === 0) return { text: 'Face not detected', color: 'text-gray-500' };
     if (bpm < 50) return { text: 'Low', color: 'text-blue-500' };
     if (bpm > 100) return { text: 'High', color: 'text-red-500' };
     return { text: 'Normal', color: 'text-green-500' };

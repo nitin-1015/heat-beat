@@ -44,7 +44,6 @@ function App() {
     setIsMonitoring(true);
     // isMonitoring.current = true;
     isMonitoringBtn.current = true;
-    console.log(`after isMonitoring: `, isMonitoring);
     // Your existing face detection and BPM calculation logic here
   };
 
@@ -52,7 +51,6 @@ function App() {
     setIsMonitoring(false);
     isMonitoringBtn.current = true;
     // isMonitoring.current = false;
-    console.log(`[stopMonitoring] after isMonitoring: `, isMonitoring);
     setBpm(0);
     bpmHistory.current = [];
   };
@@ -137,7 +135,6 @@ function App() {
 
         if (!faces.length) {
           setStatus('Face not detected');
-          console.log(`Face not detected`);
           isFaceDetected.current = false;
           setBpm(0);
           return;
@@ -145,7 +142,6 @@ function App() {
 
         if (isFaceDetected.current === false) {
           setStatus('Face detected, Calculating your BPM....');
-          console.log(`Face detected, Calculating your BPM....`);
           isFaceDetected.current = true;
         }
 
@@ -201,7 +197,7 @@ function App() {
                 const seconds = String(current.getSeconds()).padStart(2, '0');
                 const timeFormatted = `${minutes}:${seconds}`;
                 console.log(`timeFormatted : `, timeFormatted);
-                
+
                 setBpmHistory(prev => [
                   ...prev,
                   { time: timeFormatted, value: avgBpm }
@@ -299,7 +295,7 @@ function App() {
               </div>
             </div>
 
-            <HeartRateDisplay bpm={bpm} isMonitoring={isMonitoring} isFaceDetected={isFaceDetected.current} />
+            <HeartRateDisplay bpm={bpm} isMonitoring={isMonitoring} isFaceDetected={isFaceDetected.current} isMonitoringBtn={isMonitoringBtn.current} />
           </div>
 
           <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
