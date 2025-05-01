@@ -8,4 +8,6 @@ By analyzing green-channel intensity through remote photoplethysmography (rPPG),
 
 A visual overlay highlights the region of the face being monitored, making the process transparent and user-friendly.
 
+Result is being updated every 3 seconds and user can also see their histroy in graph for last 20 readings 
+
 Note : To get more accurate result, please make sure to have good camera. Mobile device can give you better accuracy.
