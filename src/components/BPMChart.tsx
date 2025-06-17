@@ -244,13 +244,12 @@ const BPMChart = ({ data }: BPMChartProps) => {
   } : null;
 
   return (
-    <div className="w-full h-full relative bg-white dark:bg-gray-800 rounded-xl shadow-lg p-4">
+    <div className="w-full h-full relative bg-white dark:bg-gray-800 p-4">
       {processedData.length > 0 ? (
         <>
           <div className="absolute top-0 left-0 right-0 h-12 bg-gradient-to-b from-white dark:from-gray-800 to-transparent z-10" />
           <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-white dark:from-gray-800 to-transparent z-10" />
           <div className="absolute top-4 left-4 z-20">
-            <h3 className="text-lg font-semibold text-gray-800 dark:text-white">Heart Rate History</h3>
             <div className="flex items-center gap-4 mt-1">
               <p className="text-sm text-gray-500 dark:text-gray-400">Real-time BPM tracking</p>
               <div className="flex items-center gap-2">

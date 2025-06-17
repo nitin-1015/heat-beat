@@ -30,7 +30,8 @@ function App() {
   const [bpmHistoryGraph, setBpmHistory] = useState<{ time: string; value: number; frame: number }[]>([]);
   const [spo2HistoryGraph, setSpO2History] = useState<{ time: string; value: number; frame: number }[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<string>("");
   const [isFaceDetected, setIsFaceDetected] = useState(false);
@@ -53,7 +54,8 @@ function App() {
   const FRAME_RATE = 5; // Reduced to 5 FPS for better accuracy
   const FRAME_INTERVAL = 1000 / FRAME_RATE; // 200ms between frames
   const MIN_FACE_SIZE = 100; // Minimum face size in pixels
-  const QUALITY_THRESHOLD = 0.7; // Minimum image quality threshold
+  // Minimum image quality threshold (currently not used)
+  // const QUALITY_THRESHOLD = 0.7;
   const BUFFER_SIZE = 100; // Define BUFFER_SIZE
   const [qualityStatus, setQualityStatus] = useState<string>("");
   const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
@@ -65,21 +67,51 @@ function App() {
   }, [isCapturing]);
 
   useEffect(() => {
-    // Initialize video processor and canvas
+      // Initialize video processor
     videoProcessorRef.current = new VideoProcessor();
     
+    // Create a container for the canvas if it doesn't exist
+    if (!canvasContainerRef.current) {
+      const container = document.createElement('div');
+      container.style.display = 'none';
+      document.body.appendChild(container);
+      canvasContainerRef.current = container;
+    }
+    
     // Create canvas element if it doesn't exist
-    if (!canvasRef.current) {
+    if (!canvasRef.current && canvasContainerRef.current) {
       const canvas = document.createElement('canvas');
-      canvas.width = 640;  // Match video dimensions
+      // Match video dimensions
+      canvas.width = 640;
       canvas.height = 480;
+      // Add canvas to container
+      canvasContainerRef.current.appendChild(canvas);
+      // Store canvas reference
       canvasRef.current = canvas;
     }
     
+    // Cleanup function
     return () => {
+      // Reset video processor
       if (videoProcessorRef.current) {
         videoProcessorRef.current.reset();
       }
+      
+      // Clean up canvas
+      if (canvasContainerRef.current) {
+        // Remove all children (canvas) from container
+        while (canvasContainerRef.current.firstChild) {
+          canvasContainerRef.current.removeChild(canvasContainerRef.current.firstChild);
+        }
+        // Remove container from DOM
+        if (canvasContainerRef.current.parentNode) {
+          canvasContainerRef.current.parentNode.removeChild(canvasContainerRef.current);
+        }
+        canvasContainerRef.current = null;
+      }
+      
+      // Clear canvas reference
+      canvasRef.current = null;
     };
   }, []);
 
@@ -152,16 +184,22 @@ function App() {
                         newHistory[frameIndex] = {
                           time: new Date().toISOString(),
                           value: currentBpm,
-                          frame: metrics.frame_count
+                          frame: metrics.frame_count || 0  // Provide fallback for frame_count
                         };
                       } else {
-                        newHistory.push({
+                        // Add new entry with current BPM and frame count
+                        const newEntry = {
                           time: new Date().toISOString(),
                           value: currentBpm,
-                          frame: metrics.frame_count
-                        });
+                          frame: metrics.frame_count || 0  // Provide fallback for frame_count
+                        };
+                        newHistory.push(newEntry);
                       }
-                      return newHistory.sort((a, b) => a.frame - b.frame);
+                      
+                      // Sort by frame number and keep only the last 20 entries
+                      return newHistory
+                        .sort((a, b) => a.frame - b.frame)
+                        .slice(-20);
                     });
                     
                     setBpm(currentBpm);
@@ -170,8 +208,9 @@ function App() {
               }
 
               // Update status with current BPM
-              if (metrics.average_bpm !== null) {
-                const roundedBpm = Math.round(metrics.average_bpm);
+              if (metrics.average_bpm != null && !isNaN(metrics.average_bpm)) {
+                // Safely round the BPM value, ensuring it's a valid number
+                const roundedBpm = Math.max(0, Math.round(Number(metrics.average_bpm)));
                 setAverageBpm(roundedBpm);
                 setBpm(roundedBpm);
                 setStatus(`Current BPM: ${roundedBpm}`);
@@ -330,11 +369,20 @@ function App() {
                         // Update state with processed metrics
                         if (metrics.spo2 !== null) {
                             setSpO2(metrics.spo2);
-                            setSpO2History(prev => [...prev, {
-                                time: Date.now(),
-                                value: metrics.spo2!,
-                                frame: frameCount
-                            }]);
+                            setSpO2History(prev => {
+                                // Ensure we have valid SpO2 data
+                                const spo2Value = typeof metrics.spo2 === 'number' ? metrics.spo2 : 0;
+                                
+                                // Create new history entry with consistent time format
+                                const newEntry = {
+                                    time: new Date().toISOString(),
+                                    value: spo2Value,
+                                    frame: frameCount
+                                };
+                                
+                                // Combine with previous history, keeping only last 20 entries
+                                return [...prev, newEntry].slice(-20);
+                            });
                             console.log('Updated SpO2:', metrics.spo2);
                         }
                         
@@ -386,11 +434,15 @@ function App() {
             // Update state with processed metrics
             if (metrics.spo2 !== null) {
               setSpO2(metrics.spo2);
-              setSpO2History(prev => [...prev, {
-                time: Date.now(),
-                value: metrics.spo2!,
-                frame: frameCount
-              }]);
+              setSpO2History(prev => {
+                const newHistory = [...prev, {
+                  time: new Date().toISOString(),
+                  value: metrics.spo2!,
+                  frame: frameCount
+                }];
+                // Keep only the last 20 readings
+                return newHistory.slice(-20);
+              });
               console.log('Updated SpO2:', metrics.spo2);
             }
             
