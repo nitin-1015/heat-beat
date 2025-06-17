@@ -4,49 +4,73 @@ interface HeartRateDisplayProps {
   bpm: number;
   isMonitoring: boolean;
   isFaceDetected: boolean;
-  isMonitoringBtn: boolean
+  status: string;
+  qualityStatus: string;
+  isCalibrating: boolean;
 }
 
-const HeartRateDisplay: React.FC<HeartRateDisplayProps> = ({ bpm, isMonitoring, isFaceDetected, isMonitoringBtn }) => {
-  const getBPMStatus = () => {
-    if (bpm === 0 && isFaceDetected && isMonitoringBtn) return { text: 'Face Detected, Calculating BPM...', color: 'text-gray-500' };
-    if (bpm === 0 && isFaceDetected) return { text: 'Face Detected', color: 'text-gray-500' };
-    if (bpm === 0) return { text: 'Face not detected', color: 'text-gray-500' };
-    if (bpm < 50) return { text: 'Low', color: 'text-blue-500' };
-    if (bpm > 100) return { text: 'High', color: 'text-red-500' };
-    return { text: 'Normal', color: 'text-green-500' };
-  };
-
-  const status = getBPMStatus();
-
+const HeartRateDisplay = ({ 
+  bpm, 
+  isMonitoring, 
+  isFaceDetected, 
+  status,
+  qualityStatus,
+  isCalibrating 
+}: HeartRateDisplayProps) => {
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6 text-center">
-      <div className="flex justify-center mb-4">
-        <div className={`relative ${isMonitoring ? 'animate-pulse' : ''}`}>
-          <Heart size={48} className="text-teal-500" />
-        </div>
-      </div>
-      
-      <div className="space-y-2">
-        <h2 className="text-4xl font-bold text-gray-900 dark:text-white">
-          {bpm} <span className="text-xl">BPM</span>
-        </h2>
-        <p className={`text-lg font-medium ${status.color}`}>
-          {status.text}
-        </p>
-      </div>
-
-      <div className="mt-6 grid grid-cols-3 gap-4 text-center">
-        {[
-          { label: 'Low', value: '< 50' },
-          { label: 'Normal', value: '50-100' },
-          { label: 'High', value: '> 100' },
-        ].map((item) => (
-          <div key={item.label} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-            <div className="text-sm text-gray-500 dark:text-gray-400">{item.label}</div>
-            <div className="text-lg font-medium text-gray-900 dark:text-white">{item.value}</div>
+    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
+      <div className="flex flex-col items-center">
+        <div className="relative">
+          <div className={`w-32 h-32 rounded-full flex items-center justify-center ${
+            isMonitoring 
+              ? isFaceDetected 
+                ? 'bg-teal-100 dark:bg-teal-900' 
+                : 'bg-red-100 dark:bg-red-900'
+              : 'bg-gray-100 dark:bg-gray-700'
+          }`}>
+            <Heart 
+              className={`w-16 h-16 ${
+                isMonitoring 
+                  ? isFaceDetected 
+                    ? 'text-teal-500 dark:text-teal-400' 
+                    : 'text-red-500 dark:text-red-400'
+                  : 'text-gray-400 dark:text-gray-500'
+              }`} 
+            />
           </div>
-        ))}
+          {isMonitoring && isFaceDetected && (
+            <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-white dark:bg-gray-800 px-4 py-1 rounded-full shadow-md">
+              <span className="text-2xl font-bold text-teal-600 dark:text-teal-400">
+                {bpm}
+              </span>
+              <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">BPM</span>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-8 text-center">
+          <p className={`text-lg font-medium ${
+            isMonitoring 
+              ? isFaceDetected 
+                ? 'text-teal-600 dark:text-teal-400' 
+                : 'text-red-600 dark:text-red-400'
+              : 'text-gray-600 dark:text-gray-400'
+          }`}>
+            {status}
+          </p>
+          
+          {isMonitoring && (
+            <div className="mt-2">
+              <p className={`text-sm ${
+                isCalibrating 
+                  ? 'text-yellow-600 dark:text-yellow-400' 
+                  : 'text-teal-600 dark:text-teal-400'
+              }`}>
+                {qualityStatus}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

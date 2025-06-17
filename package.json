@@ -10,15 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@mediapipe/camera_utils": "^0.3.1675466862",
-    "@mediapipe/face_detection": "^0.4.1646425229",
-    "@tensorflow-models/face-landmarks-detection": "^1.0.6",
-    "@tensorflow/tfjs": "^4.17.0",
-    "fft.js": "^4.0.4",
+    "chart.js": "^4.4.9",
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
+    "react-chartjs-2": "^5.3.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.1",
+    "react-router-dom": "^7.6.2",
     "recharts": "^2.12.0"
   },
   "devDependencies": {

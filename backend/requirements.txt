@@ -1,0 +1,9 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+python-multipart==0.0.9
+opencv-python==4.9.0.80
+numpy==1.26.4
+mediapipe==0.10.21
+scipy==1.12.0
+python-jose==3.3.0
+websockets==12.0 

@@ -1,258 +1,606 @@
 import { useState, useRef, useEffect } from 'react';
 import { Heart, Activity, RefreshCcw } from 'lucide-react';
 import BPMChart from './components/BPMChart';
+import SpO2Chart from './components/SpO2Chart';
 import HeartRateDisplay from './components/HeartRateDisplay';
+import SpO2Display from './components/SpO2Display';
 import CameraView from './components/CameraView';
-import * as tf from '@tensorflow/tfjs';
-import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
-// import { Camera } from '@mediapipe/camera_utils';
-import FFT from 'fft.js';
+import { VideoProcessor } from './utils/videoProcessor';
 
-const SAMPLE_RATE = 25;           // Frames per second
-const BUFFER_SIZE = 450;          // Number of samples to collect (~10 sec of data)
-const ROI_INDEXES = [
-  // Forehead + upper cheeks (more stable region for rPPG)
-  10, 338, 297, 332, 284, // left forehead
-  389, 356, 454, 323, 361, // right forehead
-  93, 132, 58, 172, 136, 150 // nose/cheek junction
-];
-const MAX_BPM = 100;              // Upper bound for realistic BPM
-const MIN_BPM = 45;               // Lower bound for realistic BPM
+interface HealthMetrics {
+  face_detected: boolean;
+  bpm?: number;
+  spo2?: number;
+  breathing_rate?: number;
+  error?: string;
+  buffer_progress?: number;
+  frame_count?: number;
+  bpm_count?: number;
+  spo2_count?: number;
+  average_bpm?: number;
+  average_spo2?: number;
+}
 
+const USE_MOCK_MODE = false; // Set to false to connect to backend server
 
 function App() {
   const [bpm, setBpm] = useState<number>(0);
+  const [spo2, setSpO2] = useState<number>(0);
   const [isMonitoring, setIsMonitoring] = useState(false);
-  const isMonitoringBtn = useRef(false);
-  const [bpmHistoryGraph, setBpmHistory] = useState<{ time: string; value: number }[]>([]);
+  const [bpmHistoryGraph, setBpmHistory] = useState<{ time: string; value: number; frame: number }[]>([]);
+  const [spo2HistoryGraph, setSpO2History] = useState<{ time: string; value: number; frame: number }[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [status, setStatus] = useState<string>("");
+  const [isFaceDetected, setIsFaceDetected] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 5;
+  const RECONNECT_DELAY = 2000; // 2 seconds
+  const [frameCount, setFrameCount] = useState<number>(0);
+  const [bufferProgress, setBufferProgress] = useState(0);
+  const frameCountRef = useRef(0);
+  const animationFrameRef = useRef<number>();
+  const videoStreamRef = useRef<MediaStream | null>(null);
+  const [isCapturing, setIsCapturing] = useState<boolean>(false);
+  const isCapturingRef = useRef<boolean>(false);
+  const [averageBpm, setAverageBpm] = useState<number | null>(null);
+  const [averageSpO2, setAverageSpO2] = useState<number | null>(null);
+  const [bpmCount, setBpmCount] = useState<number>(0);
+  const [spo2Count, setSpO2Count] = useState<number>(0);
+  const FRAME_RATE = 5; // Reduced to 5 FPS for better accuracy
+  const FRAME_INTERVAL = 1000 / FRAME_RATE; // 200ms between frames
+  const MIN_FACE_SIZE = 100; // Minimum face size in pixels
+  const QUALITY_THRESHOLD = 0.7; // Minimum image quality threshold
+  const BUFFER_SIZE = 100; // Define BUFFER_SIZE
+  const [qualityStatus, setQualityStatus] = useState<string>("");
+  const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
+  const videoProcessorRef = useRef<VideoProcessor | null>(null);
+  const qualityStatusTimeoutRef = useRef<NodeJS.Timeout>();
 
-  // const videoRef = useRef(null);
-  // const canvasRef = useRef(null);
-  // const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    isCapturingRef.current = isCapturing;
+  }, [isCapturing]);
 
-  // const [bpm, setBpm] = useState(null);
-  const [lastBPM, setLastBPM] = useState<number>(0); // store last stable bpm
-  const bpmHistory = useRef<number[]>([]);
-  const [status, setStatus] = useState('Initializing...');
-  const greenChannel = useRef<number[]>([]);  // Buffer to store green values
-  // const [lastUpdate, setLastUpdate] = useState(Date.now());
-  const lastUpdate = useRef(Date.now());
-  const isFaceDetected = useRef(false);
+  useEffect(() => {
+    // Initialize video processor and canvas
+    videoProcessorRef.current = new VideoProcessor();
+    
+    // Create canvas element if it doesn't exist
+    if (!canvasRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;  // Match video dimensions
+      canvas.height = 480;
+      canvasRef.current = canvas;
+    }
+    
+    return () => {
+      if (videoProcessorRef.current) {
+        videoProcessorRef.current.reset();
+      }
+    };
+  }, []);
+
+  const connectWebSocket = () => {
+    if (USE_MOCK_MODE) {
+        console.log('Using mock mode - no WebSocket connection needed');
+        setStatus('Mock mode active - Processing frames locally');
+        setIsConnected(true);
+        return;
+    }
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('WebSocket already connected');
+        return;
+    }
+
+    console.log('Attempting to connect to WebSocket...');
+    
+    try {
+      wsRef.current = new WebSocket('ws://localhost:8000/ws/heart-rate');
+      
+      wsRef.current.onopen = () => {
+        console.log('WebSocket connection established successfully');
+        setStatus('Connected to server - Starting frame capture...');
+        setIsConnected(true);
+        reconnectAttemptsRef.current = 0;
+        
+        // If we're already capturing, restart frame capture
+        if (isCapturingRef.current) {
+          console.log('Restarting frame capture after WebSocket reconnection...');
+          sendFrame();
+        }
+      };
+      
+      wsRef.current.onmessage = (event) => {
+        try {
+          const metrics: HealthMetrics = JSON.parse(event.data);
+          
+          if (metrics.error) {
+            setStatus(`Error: ${metrics.error}`);
+            setQualityStatus("Error in measurement");
+            return;
+          }
+          
+          // Check quality before updating BPM
+          if (checkQuality(metrics)) {
+            setIsFaceDetected(metrics.face_detected);
+            
+            if (metrics.face_detected) {
+              // Update frame count and progress
+              if (metrics.frame_count) {
+                setFrameCount(metrics.frame_count);
+                const progress = Math.round((metrics.buffer_progress || 0));
+                setBufferProgress(progress);
+              }
+              
+              // Always try to get BPM value for each frame
+              if (metrics.frame_count !== undefined) {
+                const bpmValue = metrics.average_bpm !== undefined ? metrics.average_bpm : metrics.bpm;
+                
+                if (bpmValue !== undefined && bpmValue !== null) {
+                  const currentBpm = Math.round(bpmValue);
+                  
+                  // Only update BPM if quality is good
+                  if (!isCalibrating) {
+                    setBpmHistory(prev => {
+                      const newHistory = [...prev];
+                      const frameIndex = newHistory.findIndex(d => d.frame === metrics.frame_count);
+                      if (frameIndex !== -1) {
+                        newHistory[frameIndex] = {
+                          time: new Date().toISOString(),
+                          value: currentBpm,
+                          frame: metrics.frame_count
+                        };
+                      } else {
+                        newHistory.push({
+                          time: new Date().toISOString(),
+                          value: currentBpm,
+                          frame: metrics.frame_count
+                        });
+                      }
+                      return newHistory.sort((a, b) => a.frame - b.frame);
+                    });
+                    
+                    setBpm(currentBpm);
+                  }
+                }
+              }
+
+              // Update status with current BPM
+              if (metrics.average_bpm !== null) {
+                const roundedBpm = Math.round(metrics.average_bpm);
+                setAverageBpm(roundedBpm);
+                setBpm(roundedBpm);
+                setStatus(`Current BPM: ${roundedBpm}`);
+              } else {
+                setStatus(`Face detected - Collecting data: ${bufferProgress}% (Frame ${metrics.frame_count || 0})`);
+              }
+            } else {
+              setStatus('Face not detected - Please position your face in the center of the camera');
+              setAverageBpm(null);
+              setBpm(0);
+              setBufferProgress(0);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing server message:', error);
+          setStatus('Error processing server response');
+          setQualityStatus("Error in processing");
+        }
+      };
+      
+      wsRef.current.onerror = (error) => {
+        console.error('WebSocket error details:', {
+          error,
+          readyState: wsRef.current?.readyState,
+          url: wsRef.current?.url,
+          timestamp: new Date().toISOString()
+        });
+        setStatus('Connection error - Please check if server is running');
+        setIsConnected(false);
+      };
+      
+      wsRef.current.onclose = (event) => {
+        console.log('WebSocket connection closed:', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          timestamp: new Date().toISOString()
+        });
+        setIsConnected(false);
+        
+        // Only attempt reconnect if we're still monitoring and haven't reached max attempts
+        if (isMonitoring && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++;
+          console.log(`Attempting to reconnect (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          setStatus(`Connection lost. Reconnecting... (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+          
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket();
+          }, RECONNECT_DELAY);
+        } else if (isMonitoring) {
+          console.log('Max reconnection attempts reached');
+          setStatus('Failed to reconnect. Please check if server is running and try again.');
+          stopMonitoring();
+        }
+      };
+    } catch (error) {
+      console.error('Error creating WebSocket connection:', error);
+      setStatus('Failed to create WebSocket connection');
+      setIsConnected(false);
+    }
+  };
 
   const startMonitoring = async () => {
+    if (!videoRef.current) {
+      console.error('No video element available');
+      return;
+    }
+    
+    // Reset all states at the beginning
+    isCapturingRef.current = true;
+    setIsCapturing(true);
     setIsMonitoring(true);
-    // isMonitoring.current = true;
-    isMonitoringBtn.current = true;
-    // Your existing face detection and BPM calculation logic here
+    setStatus('Starting monitoring...');
+    setFrameCount(0);
+    frameCountRef.current = 0;
+    setBufferProgress(0);
+    setBpmHistory([]); // Clear BPM history
+    setBpmCount(0);
+    setAverageBpm(null);
+    setBpm(0);
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: FRAME_RATE, max: FRAME_RATE }
+        } 
+      });
+      
+      videoStreamRef.current = stream;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      
+      // Wait for video to be ready
+      await new Promise((resolve) => {
+        if (videoRef.current?.readyState === 4) {
+          resolve(true);
+        } else {
+          videoRef.current!.onloadeddata = () => resolve(true);
+        }
+      });
+      
+      // Connect to WebSocket first
+      connectWebSocket();
+      
+      // Start frame capture loop
+      const captureFrame = async () => {
+        if (isCapturingRef.current) {
+          await sendFrame();
+          frameCountRef.current++;
+          setFrameCount(frameCountRef.current);
+          animationFrameRef.current = requestAnimationFrame(captureFrame);
+        }
+      };
+      
+      // Start frame capture after a short delay
+      setTimeout(() => {
+        if (isCapturingRef.current) {
+          captureFrame();
+        }
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Error starting monitoring:', error);
+      setStatus('Failed to start monitoring');
+      setIsMonitoring(false);
+      isCapturingRef.current = false;
+      setIsCapturing(false);
+    }
+  };
+
+  const sendFrame = async () => {
+    if (USE_MOCK_MODE) {
+        console.log('Processing frame in mock mode');
+        try {
+            if (videoRef.current && canvasRef.current) {
+                const video = videoRef.current;
+                const canvas = canvasRef.current;
+                const context = canvas.getContext('2d');
+                
+                if (context) {
+                    // Draw video frame to canvas
+                    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    console.log('Frame drawn to canvas');
+                    
+                    // Get frame data and process it
+                    const frameData = context.getImageData(0, 0, canvas.width, canvas.height);
+                    console.log('Frame data captured, size:', frameData.data.length);
+                    
+                    const metrics = videoProcessorRef.current?.processFrame(frameData);
+                    console.log('Processed metrics:', metrics);
+                    
+                    if (metrics) {
+                        // Update state with processed metrics
+                        if (metrics.spo2 !== null) {
+                            setSpO2(metrics.spo2);
+                            setSpO2History(prev => [...prev, {
+                                time: Date.now(),
+                                value: metrics.spo2!,
+                                frame: frameCount
+                            }]);
+                            console.log('Updated SpO2:', metrics.spo2);
+                        }
+                        
+                        if (metrics.face_detected) {
+                            setIsFaceDetected(true);
+                            setStatus(`Face detected. SpO2: ${metrics.spo2?.toFixed(1) || 'N/A'}%`);
+                            console.log('Face detected, quality:', metrics.quality);
+                        } else {
+                            setIsFaceDetected(false);
+                            setStatus('No face detected');
+                            console.log('No face detected');
+                        }
+                        
+                        setQualityStatus(metrics.quality > 0.7 ? 'Good' : 'Poor');
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error processing frame in mock mode:', error);
+        }
+        return;
+    }
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.log('WebSocket not ready, attempting to reconnect...');
+      await connectWebSocket();
+      return;
+    }
+
+    try {
+      if (videoRef.current && canvasRef.current) {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        
+        if (context) {
+          // Draw video frame to canvas
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          console.log('Frame drawn to canvas');
+          
+          // Get frame data and process it
+          const frameData = context.getImageData(0, 0, canvas.width, canvas.height);
+          console.log('Frame data captured, size:', frameData.data.length);
+          
+          const metrics = videoProcessorRef.current?.processFrame(frameData);
+          console.log('Processed metrics:', metrics);
+          
+          if (metrics) {
+            // Update state with processed metrics
+            if (metrics.spo2 !== null) {
+              setSpO2(metrics.spo2);
+              setSpO2History(prev => [...prev, {
+                time: Date.now(),
+                value: metrics.spo2!,
+                frame: frameCount
+              }]);
+              console.log('Updated SpO2:', metrics.spo2);
+            }
+            
+            if (metrics.face_detected) {
+              setIsFaceDetected(true);
+              setStatus(`Face detected. SpO2: ${metrics.spo2?.toFixed(1) || 'N/A'}%`);
+              console.log('Face detected, quality:', metrics.quality);
+            } else {
+              setIsFaceDetected(false);
+              setStatus('No face detected');
+              console.log('No face detected');
+            }
+            
+            setQualityStatus(metrics.quality > 0.7 ? 'Good' : 'Poor');
+          }
+          
+          // Convert canvas to blob and send
+          canvas.toBlob((blob) => {
+            if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
+              console.log('Sending frame to server, size:', blob.size);
+              wsRef.current.send(blob);
+            } else {
+              console.log('Cannot send frame - WebSocket not ready or blob is null');
+            }
+          }, 'image/jpeg', 0.8);
+        }
+      }
+    } catch (error) {
+      console.error('Error processing frame:', error);
+    }
   };
 
   const stopMonitoring = () => {
+    console.log('Stopping monitoring:', {
+      frameCount: frameCountRef.current,
+      timestamp: new Date().toISOString(),
+      metrics: {
+        totalFrames: frameCountRef.current,
+        bufferProgress: bufferProgress,
+        isFaceDetected: isFaceDetected,
+        averageBpm: averageBpm,
+        bpmCount: bpmCount
+      }
+    });
+    
+    // Stop capturing immediately
+    isCapturingRef.current = false;
+    setIsCapturing(false);
     setIsMonitoring(false);
-    isMonitoringBtn.current = true;
-    // isMonitoring.current = false;
+    
+    // Cancel any pending animation frame
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = undefined;
+    }
+    
+    // Clear any pending reconnection attempts
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = undefined;
+    }
+    
+    // Close WebSocket connection gracefully
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
+    // Stop video stream
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach(track => {
+        console.log('Stopping video track:', {
+          label: track.label,
+          timestamp: new Date().toISOString(),
+          trackState: {
+            enabled: track.enabled,
+            readyState: track.readyState,
+            muted: track.muted
+          }
+        });
+        track.stop();
+      });
+      videoStreamRef.current = null;
+    }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    
+    // Reset all states
+    setAverageBpm(null);
+    setIsFaceDetected(false);
+    setFrameCount(0);
+    frameCountRef.current = 0;
+    setBufferProgress(0);
     setBpm(0);
-    bpmHistory.current = [];
+    setBpmHistory([]);
+    setBpmCount(0);
   };
 
   useEffect(() => {
-    const loadAndStart = async () => {
-      setStatus('Loading model...');
-      console.log('Loading model...');
-
-      /**
-       * Configuring the webcam
-       */
-      await tf.setBackend('webgl');
-      await tf.ready();
-
-      /**
-       * Initialize detector object
-       */
-      const detector = await faceLandmarksDetection.createDetector(
-        faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-        {
-          runtime: 'tfjs',
-          refineLandmarks: true
-        }
-      );
-
-      // Access webcam
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-
-        // 3. Wait until video metadata is loaded (dimensions available)
-        await new Promise((resolve) => {
-          videoRef.current!.onloadedmetadata = () => resolve(null);
-        });
-
-        // 4. Play the video
-        await videoRef.current.play();
-      }
-
-      const video = videoRef.current;
-      console.log(`video : `, !!video);
-
-      if (!video) {
-        return;
-      }
-
-      // const canvas = canvasRef.current;
-      const canvas = document.createElement('canvas');
-      console.log(`canvas : `, !!canvas);
-      if (!canvas) {
-        console.log(`canvas is false, retrying after some time`);
-        setTimeout(loadAndStart, 1000);
-        return;
-      }
-
-      const ctx = canvas.getContext('2d');
-      console.log(`ctx : `, !!ctx);
-      if (!ctx) {
-        return;
-      }
-
-      // await new Promise((res) => (video.onloadedmetadata = res));
-      video.play();
-      setStatus('Scanning for face...');
-      console.log('Scanning for face...');
-
-      // Ensure canvas has matching size after video starts
-      canvas.width = video.videoWidth || 320;
-      canvas.height = video.videoHeight || 240;
-
-      // Process each frame
-      setInterval(async () => {
-        if (video.videoWidth === 0 || video.videoHeight === 0) {
-          console.log(`return from here v`);
-          return;
-        }
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        const faces = await detector.estimateFaces(video);
-
-        if (!faces.length) {
-          setStatus('Face not detected');
-          isFaceDetected.current = false;
-          setBpm(0);
-          return;
-        }
-
-        if (isFaceDetected.current === false) {
-          setStatus('Face detected, Calculating your BPM....');
-          isFaceDetected.current = true;
-        }
-
-        /**
-         * To check only when monitoring is started
-         */
-        if (isMonitoringBtn.current) {
-          const keypoints = faces[0].keypoints;
-
-          // Extract green values from chosen ROI keypoints
-          let greenSum = 0;
-          ROI_INDEXES.forEach(index => {
-            const { x, y } = keypoints[index];
-            const pixel = ctx.getImageData(x, y, 1, 1).data;
-            greenSum += pixel[1]; // Green channel
-          });
-
-          const avgGreen = greenSum / ROI_INDEXES.length;
-
-          greenChannel.current.push(avgGreen);
-
-          // Keep buffer size within limit
-          if (greenChannel.current.length > BUFFER_SIZE) {
-            greenChannel.current.shift();
-          }
-
-          const now = Date.now();
-          // Once enough data is collected, estimate BPM
-          if (greenChannel.current.length === BUFFER_SIZE && now - lastUpdate.current >= 3000) {
-            const bpmVal: number = calculateBPM(greenChannel.current, SAMPLE_RATE);
-
-            if (bpmVal >= MIN_BPM && bpmVal <= MAX_BPM) {
-              // Keep track of recent BPMs
-              bpmHistory.current.push(bpmVal);
-
-              if (bpmHistory.current.length > 5) bpmHistory.current.shift(); // use last 5 readings
-
-              const avgBpm = Math.round(
-                bpmHistory.current.reduce((sum, val) => sum + val, 0) / bpmHistory.current.length
-              );
-              console.log(`avgBpm : `, avgBpm);
-
-              // Only update BPM if jump isn't too wild
-              if (!lastBPM || Math.abs(avgBpm - lastBPM) <= 20) {
-                console.log(`avgBpm : `, avgBpm);
-                setBpm(avgBpm);
-                setLastBPM(avgBpm);
-                lastUpdate.current = now;
-
-                // Manage setBpmHistory for graph
-                const current = new Date();
-                const minutes = String(current.getMinutes()).padStart(2, '0');
-                const seconds = String(current.getSeconds()).padStart(2, '0');
-                const timeFormatted = `${minutes}:${seconds}`;
-                console.log(`timeFormatted : `, timeFormatted);
-
-                setBpmHistory(prev => [
-                  ...prev,
-                  { time: timeFormatted, value: avgBpm }
-                ].slice(-20)); // Keep last 20 readings
-
-
-              } else {
-                console.log(`Ignored sudden BPM jump to ${avgBpm}`);
-              }
-              setStatus('Successfully calculated your BPM ....');
-            }
-          }
-        }
-      }, 1000 / SAMPLE_RATE);
+    return () => {
+      stopMonitoring();
     };
-
-    loadAndStart();
   }, []);
 
-  /**
-     * Apply FFT to extract dominant frequency from green channel signal
-     * @param {*} signal 
-     * @param {*} sampleRate 
-     * @returns 
-     */
-  const calculateBPM = (signal: number[], sampleRate: number) => {
-    const fftSize = Math.pow(2, Math.floor(Math.log2(signal.length)));
-    const fft = new FFT(fftSize);
-    const input = new Array(fftSize).fill(0);
-    for (let i = 0; i < fftSize; i++) {
-      input[i] = signal[i];
+  // Add debounced quality status update
+  const updateQualityStatus = (status: string) => {
+    if (qualityStatusTimeoutRef.current) {
+      clearTimeout(qualityStatusTimeoutRef.current);
     }
+    qualityStatusTimeoutRef.current = setTimeout(() => {
+      setQualityStatus(status);
+    }, 1000); // Wait 1 second before updating
+  };
 
-    const out = fft.createComplexArray();
-    fft.realTransform(out, input);
-    fft.completeSpectrum(out);
+  useEffect(() => {
+    return () => {
+      if (qualityStatusTimeoutRef.current) {
+        clearTimeout(qualityStatusTimeoutRef.current);
+      }
+    };
+  }, []);
 
-    const powers: number[] = [];
-    for (let i = 0; i < fftSize / 2; i++) {
-      const re = out[2 * i];
-      const im = out[2 * i + 1];
-      powers.push(Math.sqrt(re * re + im * im));
+  // Update the checkQuality function
+  const checkQuality = (metrics: HealthMetrics) => {
+    if (!metrics.face_detected) {
+      updateQualityStatus("Please position your face in the center");
+      return false;
     }
+    
+    if (metrics.buffer_progress && metrics.buffer_progress < 20) {
+      updateQualityStatus("Calibrating... Please stay still");
+      setIsCalibrating(true);
+      return false;
+    }
+    
+    if (metrics.buffer_progress && metrics.buffer_progress >= 20) {
+      setIsCalibrating(false);
+      updateQualityStatus("Good quality signal");
+      return true;
+    }
+    
+    return true;
+  };
 
-    const freqs = powers.map((_, i) => (i * sampleRate) / fftSize);
-    const minHz = 0.7, maxHz = 3.0; // 42–180 BPM
-    const bpmCandidates = freqs.map((f, i) => ({
-      freq: f,
-      power: powers[i],
-      bpm: f * 60
-    })).filter(x => x.freq >= minHz && x.freq <= maxHz);
+  const handleWebSocketMessage = (event: MessageEvent) => {
+    try {
+      const metrics: HealthMetrics = JSON.parse(event.data);
+      
+      if (metrics.error) {
+        setStatus(metrics.error);
+        return;
+      }
 
-    const peak = bpmCandidates.reduce((a, b) => (a.power > b.power ? a : b), bpmCandidates[0]);
+      setIsFaceDetected(metrics.face_detected);
+      
+      if (metrics.bpm !== undefined) {
+        setBpm(metrics.bpm);
+        setBpmHistory(prev => [...prev, {
+          time: new Date().toISOString(),
+          value: metrics.bpm!,
+          frame: metrics.frame_count || 0
+        }].slice(-BUFFER_SIZE));
+        setBpmCount(prev => prev + 1);
+      }
 
-    return Math.round(peak.bpm);
+      if (metrics.spo2 !== undefined) {
+        // Validate SpO2 value and round it
+        const validSpO2 = metrics.spo2 >= 70 && metrics.spo2 <= 100;
+        if (validSpO2) {
+          const roundedSpO2 = Math.round(metrics.spo2);
+          setSpO2(roundedSpO2);
+          setSpO2History(prev => [...prev, {
+            time: new Date().toISOString(),
+            value: roundedSpO2,
+            frame: metrics.frame_count || 0
+          }].slice(-BUFFER_SIZE));
+          setSpO2Count(prev => prev + 1);
+        }
+      }
+
+      if (metrics.buffer_progress !== undefined) {
+        setBufferProgress(metrics.buffer_progress);
+      }
+
+      if (metrics.average_bpm !== undefined) {
+        setAverageBpm(metrics.average_bpm);
+      }
+
+      if (metrics.average_spo2 !== undefined) {
+        setAverageSpO2(metrics.average_spo2);
+      }
+
+      // Update status with both BPM and SpO2
+      if (metrics.face_detected) {
+        const statusParts = [];
+        if (metrics.bpm !== undefined) {
+          statusParts.push(`BPM: ${Math.round(metrics.bpm)}`);
+        }
+        if (metrics.spo2 !== undefined) {
+          statusParts.push(`SpO2: ${Math.round(metrics.spo2)}%`);
+        }
+        setStatus(statusParts.join(' | '));
+      } else {
+        setStatus('Please position your face in the center');
+      }
+    } catch (error) {
+      console.error('Error parsing WebSocket message:', error);
+    }
   };
 
   return (
@@ -262,7 +610,7 @@ function App() {
           <div className="flex items-center gap-2">
             <Heart className="text-teal-600 dark:text-teal-400" size={24} />
             <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
-              Heart Rate Monitor
+              Health Monitor
             </h1>
           </div>
         </div>
@@ -274,13 +622,25 @@ function App() {
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
               <CameraView videoRef={videoRef} isMonitoring={isMonitoring} />
 
+              <div className="mt-4 text-center text-sm text-gray-600 dark:text-gray-400">
+                {isMonitoring && (
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                    <div 
+                      className="bg-teal-600 h-2.5 rounded-full transition-all duration-300" 
+                      style={{ width: '100%' }}
+                    ></div>
+                  </div>
+                )}
+              </div>
+
               <div className="mt-6 flex justify-center">
                 <button
                   onClick={isMonitoring ? stopMonitoring : startMonitoring}
-                  className={`flex items-center gap-2 px-6 py-3 rounded-full text-white font-medium transition-all ${isMonitoring
-                    ? 'bg-red-500 hover:bg-red-600'
-                    : 'bg-teal-500 hover:bg-teal-600'
-                    }`}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-full text-white font-medium transition-all ${
+                    isMonitoring
+                      ? 'bg-red-500 hover:bg-red-600'
+                      : 'bg-teal-500 hover:bg-teal-600'
+                  }`}
                 >
                   {isMonitoring ? (
                     <>
@@ -295,14 +655,58 @@ function App() {
               </div>
             </div>
 
-            <HeartRateDisplay bpm={bpm} isMonitoring={isMonitoring} isFaceDetected={isFaceDetected.current} isMonitoringBtn={isMonitoringBtn.current} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <HeartRateDisplay 
+                bpm={bpm} 
+                isMonitoring={isMonitoring} 
+                isFaceDetected={isFaceDetected} 
+                status={`BPM: ${Math.round(bpm)}`}
+                qualityStatus={qualityStatus}
+                isCalibrating={isCalibrating}
+              />
+              <SpO2Display 
+                spo2={Math.round(spo2)} 
+                isMonitoring={isMonitoring} 
+                isFaceDetected={isFaceDetected} 
+                status={`SpO2: ${Math.round(spo2)}%`}
+                qualityStatus={qualityStatus}
+                isCalibrating={isCalibrating}
+              />
+            </div>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
-            <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">
-              Heart Rate History
-            </h2>
-            <BPMChart data={bpmHistoryGraph} />
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
+              <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">
+                Heart Rate History
+              </h2>
+              <div className="h-[300px]">
+                <BPMChart data={bpmHistoryGraph} />
+              </div>
+              {averageBpm && (
+                <div className="mt-4 p-4 bg-teal-50 dark:bg-teal-900 rounded-lg">
+                  <p className="font-semibold text-teal-600 dark:text-teal-400">
+                    Final Average BPM: {averageBpm.toFixed(1)}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
+              <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">
+                Oxygen Saturation History
+              </h2>
+              <div className="h-[300px]">
+                <SpO2Chart data={spo2HistoryGraph} />
+              </div>
+              {averageSpO2 && (
+                <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900 rounded-lg">
+                  <p className="font-semibold text-blue-600 dark:text-blue-400">
+                    Final Average SpO2: {Math.round(averageSpO2)}%
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </main>
