@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Heart, Activity, RefreshCcw } from 'lucide-react';
 import BPMChart from './components/BPMChart';
 import SpO2Chart from './components/SpO2Chart';
@@ -6,11 +6,14 @@ import HeartRateDisplay from './components/HeartRateDisplay';
 import SpO2Display from './components/SpO2Display';
 import CameraView from './components/CameraView';
 import { VideoProcessor } from './utils/videoProcessor';
+export const MIN_FACE_SIZE = 100; // Minimum face size in pixels
 
 interface HealthMetrics {
   face_detected: boolean;
   bpm?: number;
   spo2?: number;
+  current_bpm?: number;
+  current_spo2?: number;
   breathing_rate?: number;
   error?: string;
   buffer_progress?: number;
@@ -21,7 +24,7 @@ interface HealthMetrics {
   average_spo2?: number;
 }
 
-const USE_MOCK_MODE = false; // Set to false to connect to backend server
+const USE_MOCK_MODE = false;
 
 function App() {
   const [ bpm, setBpm ] = useState<number>(0);
@@ -44,6 +47,8 @@ function App() {
   const [ bufferProgress, setBufferProgress ] = useState(0);
   const frameCountRef = useRef(0);
   const animationFrameRef = useRef<number>();
+  const frameTimeoutRef = useRef<NodeJS.Timeout>();
+  const lastFrameTimeRef = useRef<number>(0);
   const videoStreamRef = useRef<MediaStream | null>(null);
   const [ isCapturing, setIsCapturing ] = useState<boolean>(false);
   const isCapturingRef = useRef<boolean>(false);
@@ -51,9 +56,9 @@ function App() {
   const [ averageSpO2, setAverageSpO2 ] = useState<number | null>(null);
   const [ bpmCount, setBpmCount ] = useState<number>(0);
   const [ spo2Count, setSpO2Count ] = useState<number>(0);
-  const FRAME_RATE = 5; // Reduced to 5 FPS for better accuracy
-  const FRAME_INTERVAL = 1000 / FRAME_RATE; // 200ms between frames
-  const MIN_FACE_SIZE = 100; // Minimum face size in pixels
+  // Frame rate is controlled by the backend
+  // We'll let the backend decide the optimal frame rate
+  // Exporting to mark as used - this is needed for face detection
   // Minimum image quality threshold (currently not used)
   // const QUALITY_THRESHOLD = 0.7;
   const BUFFER_SIZE = 100; // Define BUFFER_SIZE
@@ -92,6 +97,37 @@ function App() {
 
     // Cleanup function
     return () => {
+      // Stop any ongoing monitoring
+      isCapturingRef.current = false;
+      
+      // Clear all timeouts
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = undefined;
+      }
+      
+      if (frameTimeoutRef.current) {
+        clearTimeout(frameTimeoutRef.current);
+        frameTimeoutRef.current = undefined;
+      }
+      
+      // Cancel any pending animation frames
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = undefined;
+      }
+      
+      // Close WebSocket connection if it exists
+      if (wsRef.current) {
+        try {
+          wsRef.current.onclose = null; // Remove the close handler to prevent reconnection
+          wsRef.current.close(1000, 'Component unmounting');
+        } catch (e) {
+          console.warn('Error closing WebSocket during cleanup:', e);
+        }
+        wsRef.current = null;
+      }
+      
       // Reset video processor
       if (videoProcessorRef.current) {
         videoProcessorRef.current.reset();
@@ -115,7 +151,7 @@ function App() {
     };
   }, []);
 
-  const connectWebSocket = () => {
+  const connectWebSocket = useCallback(() => {
     if (USE_MOCK_MODE) {
       console.log('Using mock mode - no WebSocket connection needed');
       setStatus('Mock mode active - Processing frames locally');
@@ -123,34 +159,99 @@ function App() {
       return;
     }
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('WebSocket already connected');
-      return;
+    // Clean up existing connection if any
+    if (wsRef.current) {
+      console.log('Cleaning up existing WebSocket connection...');
+      // Remove all event listeners to prevent memory leaks
+      const ws = wsRef.current;
+      ws.onopen = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      
+      // Only close if not already in closing/closed state
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        try {
+          ws.close(1000, 'Reconnecting...');
+        } catch (e) {
+          console.warn('Error closing WebSocket during cleanup:', e);
+        }
+      }
+      wsRef.current = null;
     }
 
-    console.log('Attempting to connect to WebSocket...');
-
+    console.log(`Attempting to connect to WebSocket (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
+    
     try {
-      wsRef.current = new WebSocket('ws://localhost:8000/ws/heart-rate');
-
-      wsRef.current.onopen = () => {
+      // Create new WebSocket connection without protocol specification
+      const ws = new WebSocket('ws://localhost:8000/ws/heart-rate');
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
+      
+      ws.onopen = () => {
         console.log('WebSocket connection established successfully');
+        reconnectAttemptsRef.current = 0;
         setStatus('Connected to server - Starting frame capture...');
         setIsConnected(true);
-        reconnectAttemptsRef.current = 0;
 
-        // If we're already capturing, restart frame capture
+        // If we're already capturing, restart frame capture with a small delay
         if (isCapturingRef.current) {
           console.log('Restarting frame capture after WebSocket reconnection...');
-          sendFrame();
+          // Small delay to ensure connection is fully established
+          setTimeout(() => {
+            if (isCapturingRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+              sendFrame();
+            }
+          }, 100);
         }
       };
 
-      wsRef.current.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const metrics: HealthMetrics = JSON.parse(event.data);
+          // Only process if we have valid data
+          if (!event.data) {
+            console.warn('Received empty WebSocket message');
+            return;
+          }
+          
+          // Handle both string and binary data
+          let data: HealthMetrics | { type: string };
+          if (typeof event.data === 'string') {
+            try {
+              data = JSON.parse(event.data);
+              console.log('Received JSON message:', data); // Debug log
+              
+              // Handle ping/pong messages
+              if ('type' in data && data.type === 'ping') {
+                console.log('Received ping from server, sending pong');
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send('pong');
+                }
+                return;
+              }
+              
+              // Handle metrics data using the dedicated handler
+              if ('face_detected' in data && data.face_detected !== undefined) {
+                handleWebSocketMessage({
+                  data: JSON.stringify(data as HealthMetrics)
+                } as MessageEvent);
+                return;
+              }
+            } catch (e) {
+              console.error('Error parsing message:', e);
+              return;
+            }
+          } else {
+            // Handle binary data (if any)
+            console.warn('Received binary data, ignoring');
+            return;
+          }
+          
+          const metrics: HealthMetrics = data;
+          console.log('Received metrics:', metrics); // Debug log
 
           if (metrics.error) {
+            console.error('Server error:', metrics.error);
             setStatus(`Error: ${metrics.error}`);
             setQualityStatus("Error in measurement");
             return;
@@ -231,39 +332,59 @@ function App() {
         }
       };
 
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket error details:', {
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', {
           error,
-          readyState: wsRef.current?.readyState,
-          url: wsRef.current?.url,
+          readyState: ws.readyState,
+          url: ws.url,
           timestamp: new Date().toISOString()
         });
-        setStatus('Connection error - Please check if server is running');
-        setIsConnected(false);
+        setStatus('Connection error. Attempting to reconnect...');
+        
+        // Force close the connection on error to ensure clean reconnection
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1006, 'Error occurred');
+          }
+        } catch (e) {
+          console.warn('Error closing WebSocket after error:', e);
+        }
       };
 
-      wsRef.current.onclose = (event) => {
+      ws.onclose = (event) => {
         console.log('WebSocket connection closed:', {
           code: event.code,
-          reason: event.reason,
+          reason: event.reason || 'No reason provided',
           wasClean: event.wasClean,
+          readyState: ws.readyState,
           timestamp: new Date().toISOString()
         });
+        
         setIsConnected(false);
-
-        // Only attempt reconnect if we're still monitoring and haven't reached max attempts
-        if (isMonitoring && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        
+        // Don't attempt to reconnect if the closure was intentional
+        if (event.code === 1000 && event.reason === 'Component unmounting') {
+          console.log('WebSocket closed intentionally, not reconnecting');
+          return;
+        }
+        
+        // Only reconnect if we're still supposed to be connected
+        if (isCapturingRef.current) {
           reconnectAttemptsRef.current++;
-          console.log(`Attempting to reconnect (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
-          setStatus(`Connection lost. Reconnecting... (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connectWebSocket();
-          }, RECONNECT_DELAY);
-        } else if (isMonitoring) {
-          console.log('Max reconnection attempts reached');
-          setStatus('Failed to reconnect. Please check if server is running and try again.');
-          stopMonitoring();
+          const delay = Math.min(RECONNECT_DELAY * Math.pow(1.5, reconnectAttemptsRef.current - 1), 30000); // Max 30s
+          
+          console.log(`WebSocket closed, attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          
+          // Only reconnect if we're not already in the process of connecting
+          if (!reconnectTimeoutRef.current) {
+            reconnectTimeoutRef.current = setTimeout(() => {
+              if (isCapturingRef.current && (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)) {
+                console.log('Initiating WebSocket reconnection...');
+                connectWebSocket();
+              }
+              reconnectTimeoutRef.current = undefined;
+            }, delay);
+          }
         }
       };
     } catch (error) {
@@ -271,84 +392,90 @@ function App() {
       setStatus('Failed to create WebSocket connection');
       setIsConnected(false);
     }
-  };
+  }, [isCapturing, isMonitoring]);
 
   const startMonitoring = async () => {
     if (!videoRef.current) {
       console.error('No video element available');
       return;
     }
-    // Reset all states at the beginning
+
+    // Reset all states
     setAverageBpm(null);
     setIsFaceDetected(false);
     frameCountRef.current = 0;
+    setFrameCount(0);
     setBufferProgress(0);
+    setBpmHistory([]);
+    setSpO2History([]);
+    setBpm(0);
+    setSpO2(0);
+    setBpmCount(0);
+    setSpO2Count(0);
+    
+    // Set monitoring state
     isCapturingRef.current = true;
     setIsCapturing(true);
     setIsMonitoring(true);
-    setStatus('Starting monitoring...');
-    setFrameCount(0);
-    frameCountRef.current = 0;
-    setBufferProgress(0);
-    setBpmHistory([]); // Clear BPM history
-    setBpmCount(0);
-    setBpm(0);
-    setSpO2(0);
-    setSpO2History([]);
+    setStatus('Initializing camera...');
 
     try {
+      // Request camera access with optimal settings
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
           width: { ideal: 640 },
           height: { ideal: 480 },
-          frameRate: { ideal: FRAME_RATE, max: FRAME_RATE }
-        }
+          frameRate: { ideal: 15, max: 30 } // Limit frame rate to reduce load
+        },
+        audio: false
       });
 
+      // Store stream reference
       videoStreamRef.current = stream;
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
-
+      
+      // Set up video element
+      const video = videoRef.current;
+      video.srcObject = stream;
+      
       // Wait for video to be ready
-      await new Promise((resolve) => {
-        if (videoRef.current?.readyState === 4) {
-          resolve(true);
-        } else {
-          videoRef.current!.onloadeddata = () => resolve(true);
-        }
+      await new Promise((resolve, reject) => {
+        video.onloadedmetadata = () => {
+          video.play().then(resolve).catch(reject);
+        };
+        video.onerror = reject;
       });
 
-      // Connect to WebSocket first
+      setStatus('Connecting to server...');
+      
+      // Connect to WebSocket
       connectWebSocket();
-
+      
       // Start frame capture loop
-      const captureFrame = async () => {
-        if (isCapturingRef.current) {
-          await sendFrame();
-          frameCountRef.current++;
-          setFrameCount(frameCountRef.current);
-          animationFrameRef.current = requestAnimationFrame(captureFrame);
-        }
+      const captureLoop = () => {
+        if (!isCapturingRef.current) return;
+        sendFrame();
       };
-
-      // Start frame capture after a short delay
+      
+      // Start the capture loop with a small delay to ensure WebSocket is ready
       setTimeout(() => {
         if (isCapturingRef.current) {
-          captureFrame();
+          captureLoop();
         }
-      }, 1000);
-
+      }, 500);
+      
+      setStatus('Monitoring started - Position your face in the frame');
+      
     } catch (error) {
       console.error('Error starting monitoring:', error);
-      setStatus('Failed to start monitoring');
-      setIsMonitoring(false);
-      isCapturingRef.current = false;
-      setIsCapturing(false);
+      setStatus(`Error: ${error instanceof Error ? error.message : 'Failed to access camera'}`);
+      stopMonitoring();
     }
   };
 
   const sendFrame = async () => {
+    if (!isCapturingRef.current) return;
+
     if (USE_MOCK_MODE) {
       console.log('Processing frame in mock mode');
       try {
@@ -358,61 +485,58 @@ function App() {
           const context = canvas.getContext('2d');
 
           if (context) {
-            // Draw video frame to canvas
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            console.log('Frame drawn to canvas');
-
-            // Get frame data and process it
             const frameData = context.getImageData(0, 0, canvas.width, canvas.height);
-            console.log('Frame data captured, size:', frameData.data.length);
-
             const metrics = videoProcessorRef.current?.processFrame(frameData);
-            console.log('Processed metrics:', metrics);
 
+            if (metrics?.spo2 !== undefined && metrics.spo2 !== null) {
+              const currentSpO2 = metrics.spo2;
+              const currentFrame = frameCountRef.current;
+              setSpO2(currentSpO2);
+              setSpO2History(prev => [
+                ...prev.slice(-19),
+                {
+                  time: new Date().toISOString(),
+                  value: currentSpO2, // This is now guaranteed to be a number
+                  frame: currentFrame
+                }
+              ]);
+              // Increment frame count for next update
+              frameCountRef.current += 1;
+            }
+            
             if (metrics) {
-              // Update state with processed metrics
-              if (metrics.spo2 !== null) {
-                setSpO2(metrics.spo2);
-                setSpO2History(prev => {
-                  // Ensure we have valid SpO2 data
-                  const spo2Value = typeof metrics.spo2 === 'number' ? metrics.spo2 : 0;
-
-                  // Create new history entry with consistent time format
-                  const newEntry = {
-                    time: new Date().toISOString(),
-                    value: spo2Value,
-                    frame: frameCount
-                  };
-
-                  // Combine with previous history, keeping only last 20 entries
-                  return [ ...prev, newEntry ].slice(-20);
-                });
-                console.log('Updated SpO2:', metrics.spo2);
-              }
-
-              if (metrics.face_detected) {
-                setIsFaceDetected(true);
-                setStatus(`Face detected. SpO2: ${metrics.spo2?.toFixed(1) || 'N/A'}%`);
-                console.log('Face detected, quality:', metrics.quality);
-              } else {
-                setIsFaceDetected(false);
-                setStatus('No face detected');
-                console.log('No face detected');
-              }
-
+              setIsFaceDetected(metrics.face_detected);
+              setStatus(metrics.face_detected 
+                ? `Face detected. SpO2: ${metrics.spo2?.toFixed(1) || 'N/A'}%`
+                : 'No face detected');
               setQualityStatus(metrics.quality > 0.7 ? 'Good' : 'Poor');
             }
           }
         }
       } catch (error) {
-        console.error('Error processing frame in mock mode:', error);
+        console.error('Error in mock mode frame processing:', error);
+      }
+      // Schedule next frame
+      if (isCapturingRef.current) {
+        requestAnimationFrame(sendFrame);
       }
       return;
     }
 
+    // WebSocket mode
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       console.log('WebSocket not ready, attempting to reconnect...');
-      await connectWebSocket();
+      // Only reconnect if we're not already in the process of connecting
+      if (!reconnectTimeoutRef.current) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isCapturingRef.current && !(wsRef.current?.readyState === WebSocket.CONNECTING)) {
+            console.log('Initiating WebSocket reconnection...');
+            connectWebSocket();
+          }
+          reconnectTimeoutRef.current = undefined;
+        }, 1000);
+      }
       return;
     }
 
@@ -422,60 +546,66 @@ function App() {
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
 
-        if (context) {
-          // Draw video frame to canvas
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          console.log('Frame drawn to canvas');
+        if (!context) return;
 
-          // Get frame data and process it
-          const frameData = context.getImageData(0, 0, canvas.width, canvas.height);
-          console.log('Frame data captured, size:', frameData.data.length);
-
-          const metrics = videoProcessorRef.current?.processFrame(frameData);
-          console.log('Processed metrics:', metrics);
-
-          if (metrics) {
-            // Update state with processed metrics
-            if (metrics.spo2 !== null) {
-              setSpO2(metrics.spo2);
-              setSpO2History(prev => {
-                const newHistory = [ ...prev, {
-                  time: new Date().toISOString(),
-                  value: metrics.spo2!,
-                  frame: frameCount
-                } ];
-                // Keep only the last 20 readings
-                return newHistory.slice(-20);
-              });
-              console.log('Updated SpO2:', metrics.spo2);
-            }
-
-            if (metrics.face_detected) {
-              setIsFaceDetected(true);
-              setStatus(`Face detected. SpO2: ${metrics.spo2?.toFixed(1) || 'N/A'}%`);
-              console.log('Face detected, quality:', metrics.quality);
-            } else {
-              setIsFaceDetected(false);
-              setStatus('No face detected');
-              console.log('No face detected');
-            }
-
-            setQualityStatus(metrics.quality > 0.7 ? 'Good' : 'Poor');
-          }
-
-          // Convert canvas to blob and send
-          canvas.toBlob((blob) => {
+        // Capture frame
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // Convert to JPEG with reduced quality for smaller size
+        canvas.toBlob(
+          (blob) => {
             if (blob && wsRef.current?.readyState === WebSocket.OPEN) {
-              console.log('Sending frame to server, size:', blob.size);
-              wsRef.current.send(blob);
-            } else {
-              console.log('Cannot send frame - WebSocket not ready or blob is null');
+              try {
+                // Send as ArrayBuffer for better performance
+                const reader = new FileReader();
+                reader.onload = () => {
+                  try {
+                    if (reader.result && wsRef.current?.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(reader.result);
+                      console.log('Frame sent successfully');
+                    }
+                  } catch (error) {
+                    console.error('Error in sending frame:', error);
+                    // If sending fails, schedule a reconnection
+                    if (wsRef.current) {
+                      wsRef.current.close(1000, 'Error sending frame');
+                    }
+                  }
+                };
+                reader.onerror = (error) => {
+                  console.error('Error reading blob:', error);
+                };
+                reader.readAsArrayBuffer(blob);
+              } catch (error) {
+                console.error('Error sending frame:', error);
+              }
             }
-          }, 'image/jpeg', 0.8);
-        }
+
+            // Schedule next frame if still capturing
+            if (isCapturingRef.current) {
+              // Throttle frame rate to prevent overwhelming the server
+              // and give time for WebSocket to process messages
+              const frameRate = 10; // Target 10 FPS
+              const delay = Math.max(0, 1000 / frameRate - (Date.now() - (lastFrameTimeRef.current || 0)));
+              
+              frameTimeoutRef.current = setTimeout(() => {
+                if (isCapturingRef.current) {
+                  lastFrameTimeRef.current = Date.now();
+                  animationFrameRef.current = requestAnimationFrame(sendFrame);
+                }
+              }, delay);
+            }
+          },
+          'image/jpeg',
+          0.7 // Lower quality for better performance
+        );
       }
     } catch (error) {
-      console.error('Error processing frame:', error);
+      console.error('Error in frame capture:', error);
+      // Schedule next frame even on error to maintain capture loop
+      if (isCapturingRef.current) {
+        requestAnimationFrame(sendFrame);
+      }
     }
   };
 
@@ -511,7 +641,15 @@ function App() {
 
     // Close WebSocket connection gracefully
     if (wsRef.current) {
-      wsRef.current.close();
+      // Only close if connection is open or connecting
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        try {
+          wsRef.current.onclose = null; // Remove close handler to prevent reconnection
+          wsRef.current.close(1000, 'User stopped monitoring');
+        } catch (e) {
+          console.warn('Error closing WebSocket:', e);
+        }
+      }
       wsRef.current = null;
     }
 
@@ -596,29 +734,34 @@ function App() {
 
       setIsFaceDetected(metrics.face_detected);
 
-      if (metrics.bpm !== undefined) {
-        setBpm(metrics.bpm);
-        setBpmHistory(prev => [ ...prev, {
-          time: new Date().toISOString(),
-          value: metrics.bpm!,
-          frame: metrics.frame_count || 0
-        } ].slice(-BUFFER_SIZE));
+      // Use current_bpm/current_spo2 if present, otherwise fallback to bpm/spo2
+      const bpmValue = metrics.current_bpm ?? metrics.bpm;
+      if (bpmValue !== undefined && bpmValue !== null) {
+        setBpm(Math.round(bpmValue));
+        setBpmHistory(prev => [
+          ...prev,
+          {
+            time: new Date().toISOString(),
+            value: Math.round(bpmValue),
+            frame: metrics.frame_count || 0,
+          },
+        ].slice(-BUFFER_SIZE));
         setBpmCount(prev => prev + 1);
       }
 
-      if (metrics.spo2 !== undefined) {
-        // Validate SpO2 value and round it
-        const validSpO2 = metrics.spo2 >= 70 && metrics.spo2 <= 100;
-        if (validSpO2) {
-          const roundedSpO2 = Math.round(metrics.spo2);
-          setSpO2(roundedSpO2);
-          setSpO2History(prev => [ ...prev, {
+      const spo2Value = metrics.current_spo2 ?? metrics.spo2;
+      if (spo2Value !== undefined && spo2Value !== null && spo2Value >= 70 && spo2Value <= 100) {
+        const roundedSpO2 = Math.round(spo2Value);
+        setSpO2(roundedSpO2);
+        setSpO2History(prev => [
+          ...prev,
+          {
             time: new Date().toISOString(),
             value: roundedSpO2,
-            frame: metrics.frame_count || 0
-          } ].slice(-BUFFER_SIZE));
-          setSpO2Count(prev => prev + 1);
-        }
+            frame: metrics.frame_count || 0,
+          },
+        ].slice(-BUFFER_SIZE));
+        setSpO2Count(prev => prev + 1);
       }
 
       if (metrics.buffer_progress !== undefined) {
@@ -636,11 +779,11 @@ function App() {
       // Update status with both BPM and SpO2
       if (metrics.face_detected) {
         const statusParts = [];
-        if (metrics.bpm !== undefined) {
-          statusParts.push(`BPM: ${Math.round(metrics.bpm)}`);
+        if (bpmValue !== undefined && bpmValue !== null) {
+          statusParts.push(`BPM: ${Math.round(bpmValue)}`);
         }
-        if (metrics.spo2 !== undefined) {
-          statusParts.push(`SpO2: ${Math.round(metrics.spo2)}%`);
+        if (spo2Value !== undefined && spo2Value !== null) {
+          statusParts.push(`SpO2: ${Math.round(spo2Value)}%`);
         }
         setStatus(statusParts.join(' | '));
       } else {
@@ -669,6 +812,27 @@ function App() {
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
               <CameraView videoRef={ videoRef } isMonitoring={ isMonitoring } />
+
+              {/* WebSocket Connection Status */}
+              <div className="text-xs text-center mb-2">
+                <span className={isConnected ? "text-green-600" : "text-red-600"}>
+                  {isConnected ? "WebSocket Connected" : "WebSocket Disconnected"}
+                </span>
+              </div>
+
+              {/* Status Bar */}
+              {status && (
+                <>
+                  <div className="text-xs text-center mb-2">
+                    Frames processed: {frameCount} | SpO₂ readings: {spo2Count}
+                  </div>
+                </>
+              )}
+              {status && (
+                <div className="mt-2 mb-2 text-center text-sm text-blue-700 dark:text-blue-300">
+                  {status}
+                </div>
+              )}
 
               <div className="mt-4 text-center text-sm text-gray-600 dark:text-gray-400">
                 { isMonitoring && (
