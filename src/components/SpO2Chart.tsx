@@ -1,3 +1,4 @@
+import React from 'react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -8,8 +9,9 @@ import {
   Title,
   Tooltip,
   Legend,
+  Filler,
   ChartOptions,
-  Filler
+  ScriptableContext
 } from 'chart.js';
 
 ChartJS.register(
@@ -23,18 +25,20 @@ ChartJS.register(
   Filler
 );
 
-interface SpO2ChartProps {
-  data: {
-    time: string;
-    value: number;
-    frame: number;
-  }[];
+interface DataPoint {
+  time: string;
+  value: number;
+  frame: number;
 }
 
-const SpO2Chart = ({ data }: SpO2ChartProps) => {
-  // Enhanced data processing and validation
-  const processData = (rawData: typeof data) => {
-    // First pass: basic validation
+interface SpO2ChartProps {
+  data: DataPoint[];
+}
+
+const SpO2Chart: React.FC<SpO2ChartProps> = ({ data }) => {
+  // Process and validate the data
+  const processData = (rawData: DataPoint[]): DataPoint[] => {
+    // Basic validation
     const validData = rawData.filter(item => 
       typeof item.value === 'number' && 
       !isNaN(item.value) && 
@@ -44,78 +48,73 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
 
     if (validData.length < 2) return validData;
 
-    // Second pass: remove outliers using moving average
+    // Smooth data using moving average
     const windowSize = 3;
-    const smoothedData = validData.map((item, index) => {
+    return validData.map((item, index) => {
       const start = Math.max(0, index - Math.floor(windowSize / 2));
       const end = Math.min(validData.length, index + Math.floor(windowSize / 2) + 1);
       const window = validData.slice(start, end);
       const avg = window.reduce((sum, d) => sum + d.value, 0) / window.length;
       
-      // If the value deviates too much from the average, use the average instead
-      if (Math.abs(item.value - avg) > 5) {
-        return { ...item, value: avg };
-      }
-      return item;
+      // Smooth out large deviations
+      return Math.abs(item.value - avg) > 5 
+        ? { ...item, value: Math.round(avg) } 
+        : item;
     });
-
-    return smoothedData;
   };
 
   const processedData = processData(data);
-
-  // Create frame numbers array based on actual data
-  const frameNumbers = processedData.map(d => d.frame);
-  
-  // Create SpO2 values array
+  const frameNumbers = processedData.map(d => `T${d.frame}`);
   const spo2Values = processedData.map(d => d.value);
 
-  // Calculate gradient colors based on SpO2 values
-  const getGradientColor = (ctx: CanvasRenderingContext2D) => {
-    const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-    // More natural gradient colors for SpO2
-    gradient.addColorStop(0, 'rgba(34, 197, 94, 0.8)'); // green-500
-    gradient.addColorStop(0.5, 'rgba(234, 179, 8, 0.6)'); // yellow-500
-    gradient.addColorStop(1, 'rgba(239, 68, 68, 0.2)'); // red-500
+  // Calculate gradient for the chart line
+  const getGradientColor = (context: ScriptableContext<"line">) => {
+    const chart = context.chart;
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return 'rgba(34, 197, 94, 0.8)';
+    
+    const gradient = ctx.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+    gradient.addColorStop(0, 'rgba(34, 197, 94, 0.2)');
+    gradient.addColorStop(0.5, 'rgba(234, 179, 8, 0.4)');
+    gradient.addColorStop(1, 'rgba(239, 68, 68, 0.1)');
     return gradient;
   };
 
-  const chartData = {
+  // Chart data configuration
+  const chartData = React.useMemo(() => ({
     labels: frameNumbers,
     datasets: [
       {
         label: 'SpO2',
         data: spo2Values,
-        borderColor: 'rgb(34, 197, 94)', // green-500
-        backgroundColor: (context: any) => {
-          const chart = context.chart;
-          const { ctx, chartArea } = chart;
-          if (!chartArea) return null;
-          return getGradientColor(ctx);
-        },
+        borderColor: 'rgb(34, 197, 94)',
+        backgroundColor: (context: ScriptableContext<"line">) => getGradientColor(context),
         tension: 0.3,
         fill: true,
         pointRadius: (context: any) => {
           const index = context.dataIndex;
           const value = context.raw;
-          // Make points more prominent for significant changes
-          return Math.abs(value - (spo2Values[index - 1] || value)) > 3 ? 5 : 3;
+          // Show only last 3 points and points with significant changes
+          if (index >= spo2Values.length - 3) return 4;
+          if (index > 0 && Math.abs(value - spo2Values[Math.max(0, index - 1)]) > 2) return 4;
+          return 0;
         },
         pointHoverRadius: 6,
-        pointBackgroundColor: 'rgb(34, 197, 94)', // green-500
+        pointBackgroundColor: 'rgb(34, 197, 94)',
         pointBorderColor: '#fff',
         pointBorderWidth: 2,
-        borderWidth: 2.5,
+        borderWidth: 2,
         spanGaps: false,
       },
     ],
-  };
+  }), [frameNumbers, spo2Values]);
 
+  // Chart options
   const options: ChartOptions<'line'> = {
     responsive: true,
     maintainAspectRatio: false,
     animation: {
-      duration: 1000,
+      duration: 300,
       easing: 'easeInOutQuart'
     },
     interaction: {
@@ -130,14 +129,14 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
           color: '#6B7280',
           font: {
             size: 13,
-            weight: '600',
+            weight: 600,
             family: "'Inter', sans-serif"
           },
           padding: { top: 15 }
         },
         grid: {
           color: 'rgba(107, 114, 128, 0.08)',
-          drawBorder: false,
+          drawOnChartArea: false,
           lineWidth: 1
         },
         ticks: {
@@ -147,46 +146,36 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
             size: 12,
             family: "'Inter', sans-serif"
           },
-          padding: 10,
-          callback: (value, index) => {
-            return index % 5 === 0 ? `T${value}` : '';
-          }
-        },
-        border: {
-          display: false
+          padding: 8
         }
       },
       y: {
+        min: 70,
+        max: 100,
         title: {
           display: true,
           text: 'SpO2 %',
           color: '#6B7280',
           font: {
             size: 13,
-            weight: '600',
+            weight: 600,
             family: "'Inter', sans-serif"
           },
           padding: { bottom: 15 }
         },
-        min: 70,
-        max: 100,
         grid: {
           color: 'rgba(107, 114, 128, 0.08)',
-          drawBorder: false,
+          drawOnChartArea: true,
           lineWidth: 1
         },
         ticks: {
-          stepSize: 5,
           color: '#6B7280',
           font: {
             size: 12,
             family: "'Inter', sans-serif"
           },
-          padding: 10,
+          padding: 8,
           callback: (value) => `${value}%`
-        },
-        border: {
-          display: false
         }
       }
     },
@@ -195,39 +184,18 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
         display: false
       },
       tooltip: {
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
-        titleColor: '#1F2937',
-        bodyColor: '#1F2937',
-        borderColor: 'rgba(107, 114, 128, 0.1)',
+        backgroundColor: 'white',
+        titleColor: '#111827',
+        bodyColor: '#4B5563',
+        borderColor: '#E5E7EB',
         borderWidth: 1,
         padding: 12,
-        cornerRadius: 8,
-        displayColors: false,
-        titleFont: {
-          size: 13,
-          weight: '600',
-          family: "'Inter', sans-serif"
-        },
-        bodyFont: {
-          size: 12,
-          family: "'Inter', sans-serif"
-        },
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
         callbacks: {
           label: (context) => {
-            const value = context.raw;
-            let status = '';
-            if (value >= 95) status = 'Normal';
-            else if (value >= 90) status = 'Mild Hypoxia';
-            else status = 'Hypoxia';
-            
-            const prevValue = spo2Values[context.dataIndex - 1];
-            const change = prevValue ? value - prevValue : 0;
-            const changeText = change !== 0 ? ` (${change > 0 ? '+' : ''}${change.toFixed(1)}%)` : '';
-            
-            return value !== null ? `${value.toFixed(1)}% (${status})${changeText}` : 'No data';
-          },
-          title: (context) => {
-            return `Time ${context[0].label}`;
+            const label = context.dataset.label || '';
+            const value = context.parsed.y;
+            return `${label}: ${value}%`;
           }
         }
       }
@@ -235,76 +203,43 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
   };
 
   // Calculate statistics
-  const stats = processedData.length > 0 ? {
-    avg: spo2Values.reduce((a, b) => a + b, 0) / spo2Values.length,
-    min: Math.min(...spo2Values),
-    max: Math.max(...spo2Values),
-    current: spo2Values[spo2Values.length - 1]
-  } : null;
+  const stats = React.useMemo(() => {
+    if (spo2Values.length === 0) return null;
+    
+    const values = spo2Values.filter(v => v !== null && !isNaN(v));
+    if (values.length === 0) return null;
+    
+    return {
+      current: values[values.length - 1],
+      average: values.reduce((a, b) => a + b, 0) / values.length,
+      min: Math.min(...values),
+      max: Math.max(...values)
+    };
+  }, [spo2Values]);
 
   return (
-    <div className="w-full h-full relative bg-white dark:bg-gray-800 p-4">
-      {processedData.length > 0 ? (
-        <>
-          <div className="absolute top-0 left-0 right-0 h-12 bg-gradient-to-b from-white dark:from-gray-800 to-transparent z-10" />
-          <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-white dark:from-gray-800 to-transparent z-10" />
-          <div className="absolute top-4 left-4 z-20">
-            <div className="flex items-center gap-4 mt-1">
-              <p className="text-sm text-gray-500 dark:text-gray-400">Real-time SpO2 tracking</p>
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                <span className="text-xs text-gray-500 dark:text-gray-400">Current SpO2</span>
-              </div>
-            </div>
-          </div>
-          <div className="absolute top-4 right-4 z-20 flex gap-2">
-            <div className="px-2 py-1 bg-green-50 dark:bg-green-900/30 rounded-lg">
-              <span className="text-xs font-medium text-green-600 dark:text-green-400">95-100%</span>
-              <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">Normal</span>
-            </div>
-            <div className="px-2 py-1 bg-yellow-50 dark:bg-yellow-900/30 rounded-lg">
-              <span className="text-xs font-medium text-yellow-600 dark:text-yellow-400">90-94%</span>
-              <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">Mild</span>
-            </div>
-            <div className="px-2 py-1 bg-red-50 dark:bg-red-900/30 rounded-lg">
-              <span className="text-xs font-medium text-red-600 dark:text-red-400">Below 90%</span>
-              <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">Low</span>
-            </div>
-          </div>
-          {stats && (
-            <div className="absolute bottom-4 left-4 right-4 z-20 grid grid-cols-4 gap-2">
-              <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-2">
-                <p className="text-xs text-gray-500 dark:text-gray-400">Current</p>
-                <p className="text-lg font-semibold text-gray-800 dark:text-white">{stats.current.toFixed(1)}%</p>
-              </div>
-              <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-2">
-                <p className="text-xs text-gray-500 dark:text-gray-400">Average</p>
-                <p className="text-lg font-semibold text-gray-800 dark:text-white">{stats.avg.toFixed(1)}%</p>
-              </div>
-              <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-2">
-                <p className="text-xs text-gray-500 dark:text-gray-400">Min</p>
-                <p className="text-lg font-semibold text-gray-800 dark:text-white">{stats.min.toFixed(1)}%</p>
-              </div>
-              <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-2">
-                <p className="text-xs text-gray-500 dark:text-gray-400">Max</p>
-                <p className="text-lg font-semibold text-gray-800 dark:text-white">{stats.max.toFixed(1)}%</p>
-              </div>
-            </div>
-          )}
-          <div className="h-full pt-16 pb-20">
-            <Line data={chartData} options={options} />
-          </div>
-        </>
-      ) : (
-        <div className="flex items-center justify-center h-full">
+    <div className="bg-white p-4 rounded-lg shadow">
+      <h3 className="text-lg font-medium mb-2">Oxygen Saturation History</h3>
+      <div className="h-64">
+        <Line options={options} data={chartData} />
+      </div>
+      {stats && (
+        <div className="mt-4 grid grid-cols-4 gap-2">
           <div className="text-center">
-            <div className="text-gray-400 dark:text-gray-500 mb-4">
-              <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-            </div>
-            <p className="text-gray-600 dark:text-gray-300 font-medium text-lg">No SpO2 data available</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Start monitoring to see your oxygen saturation history</p>
+            <p className="text-sm text-gray-500">Current</p>
+            <p className="text-lg font-semibold">{Math.round(stats.current)}%</p>
+          </div>
+          <div className="text-center">
+            <p className="text-sm text-gray-500">Avg</p>
+            <p className="text-lg font-semibold">{Math.round(stats.average)}%</p>
+          </div>
+          <div className="text-center">
+            <p className="text-sm text-gray-500">Min</p>
+            <p className="text-lg font-semibold">{Math.round(stats.min)}%</p>
+          </div>
+          <div className="text-center">
+            <p className="text-sm text-gray-500">Max</p>
+            <p className="text-lg font-semibold">{Math.round(stats.max)}%</p>
           </div>
         </div>
       )}
@@ -312,4 +247,4 @@ const SpO2Chart = ({ data }: SpO2ChartProps) => {
   );
 };
 
-export default SpO2Chart; 
+export default SpO2Chart;

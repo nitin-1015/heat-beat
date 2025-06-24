@@ -41,9 +41,13 @@ const HeartRateDisplay = ({
           {isMonitoring && isFaceDetected && (
             <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-white dark:bg-gray-800 px-4 py-1 rounded-full shadow-md">
               <span className="text-2xl font-bold text-teal-600 dark:text-teal-400">
-                {bpm}
+                {bpm > 0 ? bpm : '--'}
               </span>
-              <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">BPM</span>
+              {bpm > 0 && (
+                <span className="text-sm text-gray-500 dark:text-gray-400 ml-1">
+                  BPM
+                </span>
+              )}
             </div>
           )}
         </div>

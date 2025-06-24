@@ -27,11 +27,17 @@ interface HealthMetrics {
 const USE_MOCK_MODE = false;
 
 function App() {
-  const [ bpm, setBpm ] = useState<number>(0);
-  const [ spo2, setSpO2 ] = useState<number>(0);
-  const [ isMonitoring, setIsMonitoring ] = useState(false);
-  const [ bpmHistoryGraph, setBpmHistory ] = useState<{ time: string; value: number; frame: number }[]>([]);
-  const [ spo2HistoryGraph, setSpO2History ] = useState<{ time: string; value: number; frame: number }[]>([]);
+  const [bpm, setBpm] = useState<number>(0);
+  const [spo2, setSpO2] = useState<number>(0);
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  
+  // Full history states
+  const [fullBpmHistory, setFullBpmHistory] = useState<{ time: string; value: number; frame: number }[]>([]);
+  const [fullSpo2History, setFullSpo2History] = useState<{ time: string; value: number; frame: number }[]>([]);
+  
+  // Graph states (showing either full or partial history)
+  const [bpmHistoryGraph, setBpmHistoryGraph] = useState<{ time: string; value: number; frame: number }[]>([]);
+  const [spo2HistoryGraph, setSpO2HistoryGraph] = useState<{ time: string; value: number; frame: number }[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
@@ -278,7 +284,7 @@ function App() {
 
                   // Only update BPM if quality is good
                   if (!isCalibrating) {
-                    setBpmHistory(prev => {
+                    setFullBpmHistory(prev => {
                       const newHistory = [ ...prev ];
                       const frameIndex = newHistory.findIndex(d => d.frame === metrics.frame_count);
                       if (frameIndex !== -1) {
@@ -308,15 +314,68 @@ function App() {
                 }
               }
 
-              // Update status with current BPM
+              // Update BPM and SpO2 values
               if (metrics.average_bpm != null && !isNaN(metrics.average_bpm)) {
-                // Safely round the BPM value, ensuring it's a valid number
                 const roundedBpm = Math.max(0, Math.round(Number(metrics.average_bpm)));
                 setAverageBpm(roundedBpm);
                 setBpm(roundedBpm);
+                
+                // Update BPM history
+                setFullBpmHistory(prevFullBpmHistory => {
+                  const now = new Date();
+                  const timeStr = now.toISOString();
+                  const newDataPoint = {
+                    time: timeStr,
+                    value: roundedBpm,
+                    frame: metrics.frame_count || 0
+                  };
+                  
+                  // Add to full history
+                  const updatedFullHistory = [...prevFullBpmHistory, newDataPoint];
+                  
+                  // For the graph, show either the full history or last 20 points based on monitoring state
+                  if (isMonitoring) {
+                    setBpmHistoryGraph(updatedFullHistory.slice(-20));
+                  } else {
+                    setBpmHistoryGraph(updatedFullHistory);
+                  }
+                  
+                  return updatedFullHistory;
+                });
+                
                 setStatus(`Current BPM: ${roundedBpm}`);
               } else {
                 setStatus(`Face detected - Collecting data: ${bufferProgress}% (Frame ${metrics.frame_count || 0})`);
+              }
+              
+              // Update SpO2 if available
+              if (metrics.average_spo2 != null && !isNaN(metrics.average_spo2)) {
+                const roundedSpO2 = Math.max(0, Math.min(100, Math.round(Number(metrics.average_spo2))));
+                setAverageSpO2(roundedSpO2);
+                setSpO2(roundedSpO2);
+                
+                // Update SpO2 history
+                setFullSpo2History(prevFullSpo2History => {
+                  const now = new Date();
+                  const timeStr = now.toISOString();
+                  const newDataPoint = {
+                    time: timeStr,
+                    value: roundedSpO2,
+                    frame: metrics.frame_count || 0
+                  };
+                  
+                  // Add to full history
+                  const updatedFullHistory = [...prevFullSpo2History, newDataPoint];
+                  
+                  // For the graph, show either the full history or last 20 points based on monitoring state
+                  if (isMonitoring) {
+                    setSpO2HistoryGraph(updatedFullHistory.slice(-20));
+                  } else {
+                    setSpO2HistoryGraph(updatedFullHistory);
+                  }
+                  
+                  return updatedFullHistory;
+                });
               }
             } else {
               setStatus('Face not detected - Please position your face in the center of the camera');
@@ -399,19 +458,13 @@ function App() {
       console.error('No video element available');
       return;
     }
-
-    // Reset all states
+    
+    // Reset all states when starting new monitoring
+    setFullBpmHistory([]);
+    setFullSpo2History([]);
+    setBpmHistoryGraph([]);
+    setSpO2HistoryGraph([]);
     setAverageBpm(null);
-    setIsFaceDetected(false);
-    frameCountRef.current = 0;
-    setFrameCount(0);
-    setBufferProgress(0);
-    setBpmHistory([]);
-    setSpO2History([]);
-    setBpm(0);
-    setSpO2(0);
-    setBpmCount(0);
-    setSpO2Count(0);
     
     // Set monitoring state
     isCapturingRef.current = true;
@@ -493,7 +546,7 @@ function App() {
               const currentSpO2 = metrics.spo2;
               const currentFrame = frameCountRef.current;
               setSpO2(currentSpO2);
-              setSpO2History(prev => [
+              setFullSpo2History(prev => [
                 ...prev.slice(-19),
                 {
                   time: new Date().toISOString(),
@@ -622,7 +675,19 @@ function App() {
       }
     });
 
-    // Stop capturing immediately
+    // When stopping, show the full history in the graphs
+    setBpmHistoryGraph([...fullBpmHistory]);
+    setSpO2HistoryGraph([...fullSpo2History]);
+    
+    // Log the state for debugging
+    console.log('Stopped monitoring. Full history:', {
+      bpmHistoryLength: fullBpmHistory.length,
+      spo2HistoryLength: fullSpo2History.length,
+      bpmHistoryGraphLength: bpmHistoryGraph.length,
+      spo2HistoryGraphLength: spo2HistoryGraph.length
+    });
+    
+    // Stop capturing and update states
     isCapturingRef.current = false;
     setIsCapturing(false);
     setIsMonitoring(false);
@@ -734,18 +799,51 @@ function App() {
 
       setIsFaceDetected(metrics.face_detected);
 
+      // Debug log for BPM values
+      console.log('Received BPM values:', {
+        current_bpm: metrics.current_bpm,
+        bpm: metrics.bpm,
+        frame: metrics.frame_count,
+        buffer_progress: metrics.buffer_progress
+      });
+
       // Use current_bpm/current_spo2 if present, otherwise fallback to bpm/spo2
       const bpmValue = metrics.current_bpm ?? metrics.bpm;
-      if (bpmValue !== undefined && bpmValue !== null) {
-        setBpm(Math.round(bpmValue));
-        setBpmHistory(prev => [
-          ...prev,
-          {
+      const hasValidBpm = bpmValue !== null && bpmValue !== undefined;
+      
+      // Always update the status to reflect if we have a valid BPM reading
+      if (metrics.face_detected && !hasValidBpm) {
+        setStatus('Adjust face position for BPM reading...');
+      } else if (metrics.face_detected && metrics.buffer_progress && metrics.buffer_progress < 100) {
+        setStatus(`Calibrating... ${metrics.buffer_progress}%`);
+      }
+
+      if (hasValidBpm) {
+        const roundedBpm = Math.round(bpmValue);
+        setBpm(roundedBpm);
+        
+        // Update full BPM history
+        setFullBpmHistory(prev => {
+          const newHistory = [...prev];
+          newHistory.push({
             time: new Date().toISOString(),
-            value: Math.round(bpmValue),
-            frame: metrics.frame_count || 0,
-          },
-        ].slice(-BUFFER_SIZE));
+            value: roundedBpm,
+            frame: metrics.frame_count || 0
+          });
+          return newHistory.slice(-BUFFER_SIZE);
+        });
+
+        // Update BPM graph display (last 20 points)
+        setBpmHistoryGraph(prev => {
+          const newGraph = [...prev];
+          newGraph.push({
+            time: new Date().toISOString(),
+            value: roundedBpm,
+            frame: metrics.frame_count || 0
+          });
+          return newGraph.slice(-20);
+        });
+
         setBpmCount(prev => prev + 1);
       }
 
@@ -753,14 +851,29 @@ function App() {
       if (spo2Value !== undefined && spo2Value !== null && spo2Value >= 70 && spo2Value <= 100) {
         const roundedSpO2 = Math.round(spo2Value);
         setSpO2(roundedSpO2);
-        setSpO2History(prev => [
-          ...prev,
-          {
+        
+        // Update full SpO2 history
+        setFullSpo2History(prev => {
+          const newHistory = [...prev];
+          newHistory.push({
             time: new Date().toISOString(),
             value: roundedSpO2,
-            frame: metrics.frame_count || 0,
-          },
-        ].slice(-BUFFER_SIZE));
+            frame: metrics.frame_count || 0
+          });
+          return newHistory.slice(-BUFFER_SIZE);
+        });
+
+        // Update SpO2 graph display (last 20 points)
+        setSpO2HistoryGraph(prev => {
+          const newGraph = [...prev];
+          newGraph.push({
+            time: new Date().toISOString(),
+            value: roundedSpO2,
+            frame: metrics.frame_count || 0
+          });
+          return newGraph.slice(-20);
+        });
+
         setSpO2Count(prev => prev + 1);
       }
 
@@ -814,25 +927,25 @@ function App() {
               <CameraView videoRef={ videoRef } isMonitoring={ isMonitoring } />
 
               {/* WebSocket Connection Status */}
-              <div className="text-xs text-center mb-2">
+              {/* <div className="text-xs text-center mb-2">
                 <span className={isConnected ? "text-green-600" : "text-red-600"}>
                   {isConnected ? "WebSocket Connected" : "WebSocket Disconnected"}
                 </span>
-              </div>
+              </div> */}
 
               {/* Status Bar */}
-              {status && (
+              {/* {status && (
                 <>
                   <div className="text-xs text-center mb-2">
                     Frames processed: {frameCount} | SpO₂ readings: {spo2Count}
                   </div>
                 </>
-              )}
-              {status && (
+              )} */}
+              {/* {status && (
                 <div className="mt-2 mb-2 text-center text-sm text-blue-700 dark:text-blue-300">
                   {status}
                 </div>
-              )}
+              )} */}
 
               <div className="mt-4 text-center text-sm text-gray-600 dark:text-gray-400">
                 { isMonitoring && (
