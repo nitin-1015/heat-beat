@@ -218,9 +218,8 @@ const SpO2Chart: React.FC<SpO2ChartProps> = ({ data }) => {
   }, [spo2Values]);
 
   return (
-    <div className="bg-white p-4 rounded-lg shadow">
-      <h3 className="text-lg font-medium mb-2">Oxygen Saturation History</h3>
-      <div className="h-64">
+    <div className="bg-white">
+      <div className="h-48">
         <Line options={options} data={chartData} />
       </div>
       {stats && (
