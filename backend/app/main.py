@@ -116,11 +116,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception as e:
                     error_msg = f"Error processing frame: {str(e)}"
                     logger.error(error_msg, exc_info=True)
-                    await websocket.send_json({
-                        "error": error_msg,
-                        "type": "processing_error",
-                        "timestamp": time.time()
-                    })
+                    try:
+                        await manager.send_personal_message({
+                            "error": error_msg,
+                            "type": "processing_error",
+                            "timestamp": time.time()
+                        }, client_id)
+                    except Exception as send_error:
+                        logger.error(f"Failed to send error message to {client_id}: {str(send_error)}")
+                        raise  # Re-raise to trigger WebSocket cleanup
                 
             except asyncio.TimeoutError:
                 logger.warning(f"No data received from {client_id} for 30 seconds, sending ping...")
@@ -146,6 +150,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     
     except WebSocketDisconnect as e:
         logger.info(f"Client {client_id} disconnected with code {e.code}: {e.reason}")
+    except asyncio.CancelledError:
+        logger.info(f"WebSocket connection was cancelled for {client_id}")
+        raise
     except Exception as e:
         logger.error(f"WebSocket error for {client_id}: {str(e)}", exc_info=True)
     finally:
@@ -154,4 +161,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await manager.disconnect(client_id)
         except Exception as e:
             logger.error(f"Error during WebSocket cleanup for {client_id}: {str(e)}")
+            # Ensure we don't mask the original exception if there was one
+            if not isinstance(e, asyncio.CancelledError):
+                raise
         logger.info(f"WebSocket connection closed for {client_id}")

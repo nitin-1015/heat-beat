@@ -82,6 +82,7 @@ const CameraView: React.FC<CameraViewProps> = ({
           <div className="inline-block bg-black/70 text-white text-xs px-2 py-1 rounded">
             {signalQuality > 0.7 ? '✓ Good signal' : 
              signalQuality > 0.4 ? '✓ Weak signal' : '✗ Adjust position'}
+            {signalQuality > 0 && ` (${Math.round((signalQuality) * 100)}%)`}
           </div>
         </div>
       )}

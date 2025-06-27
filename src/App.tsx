@@ -801,6 +801,7 @@ function App() {
       const metrics: HealthMetrics = JSON.parse(event.data);
 
       if (metrics.error) {
+        console.error('WebSocket error:', metrics.error);
         setStatus(metrics.error);
         return;
       }

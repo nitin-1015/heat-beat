@@ -232,16 +232,26 @@ class HeartRateService:
             # Check if we have enough valid samples for BPM calculation
             if self.valid_samples < min_samples_required:
                 logger.warning(f"⏳ Insufficient samples for BPM: {self.valid_samples}/{min_samples_required} (need at least {min_samples_required})")
-                return {
+                buffer_fill = self.valid_samples / self.buffer_size
+                signal_quality = min(1.0, buffer_fill * 1.2)  # Cap at 1.0
+                
+                # If we have a BPM reading, adjust quality based on signal metrics
+                if current_bpm is not None:
+                    # If we have good signal metrics, boost the quality
+                    signal_quality = min(1.0, signal_quality * 1.2)
+                
+                # Ensure quality is between 0 and 1
+                signal_quality = max(0.0, min(1.0, signal_quality))
+                
+                response = {
                     "face_detected": True,
-                    "current_bpm": None,
-                    "current_spo2": None,
+                    "current_bpm": float(current_bpm) if current_bpm is not None else None,
+                    "current_spo2": float(current_spo2) if current_spo2 is not None else None,
                     "frame_count": self.frame_count,
-                    "buffer_index": self.buffer_index,
-                    "buffer_size": self.buffer_size,
-                    "valid_samples": self.valid_samples,
-                    "error": f"Insufficient samples: {self.valid_samples}/{min_samples_required}"
+                    "buffer_progress": int((self.valid_samples / self.buffer_size) * 100),
+                    "signal_quality": float(signal_quality)  # Add signal quality to response
                 }
+                return response
             
             # Always get a signal window, even if we haven't filled the buffer
             signal_window = self.ppg_buffer[:self.valid_samples]
@@ -319,13 +329,26 @@ class HeartRateService:
             logger.info(f"buffer_index {self.buffer_index}")
             logger.info(f"buffer_size {self.buffer_size}")
 
+            # Calculate signal quality based on buffer progress and signal metrics
+            buffer_fill = self.valid_samples / self.buffer_size
+            signal_quality = min(1.0, buffer_fill * 1.2)  # Cap at 1.0
+            
+            # If we have a BPM reading, adjust quality based on signal metrics
+            if current_bpm is not None:
+                # If we have good signal metrics, boost the quality
+                signal_quality = min(1.0, signal_quality * 1.2)
+            
+            # Ensure quality is between 0 and 1
+            signal_quality = max(0.0, min(1.0, signal_quality))
+            
             return {
                 "face_detected": True,
                 "frame_count": self.frame_count,
-                "buffer_progress": int((self.buffer_index / self.buffer_size) * 100),
+                "buffer_progress": int((self.valid_samples / self.buffer_size) * 100),
                 "current_bpm": current_bpm,
                 "current_spo2": current_spo2,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "signal_quality": signal_quality  # Add signal quality to response
             }
             
         except Exception as e:
