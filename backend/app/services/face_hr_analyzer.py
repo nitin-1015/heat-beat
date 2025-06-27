@@ -58,19 +58,20 @@ class FaceHRAnalyzer:
         logger.info(f"Initialized FaceHRAnalyzer with sample_rate={sample_rate}, buffer_size={buffer_size}")
     
     def _init_face_detector(self):
-        """Initialize the face detector and landmark predictor"""
+        """Initialize the face detector with strict parameters for better accuracy"""
         try:
             import mediapipe as mp
             mp_face_mesh = mp.solutions.face_mesh
             return mp_face_mesh.FaceMesh(
                 max_num_faces=1,
                 refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
+                min_detection_confidence=0.7,  # Increased from 0.5
+                min_tracking_confidence=0.7,   # Increased from 0.5
+                static_image_mode=False
             )
         except ImportError:
             logger.error("MediaPipe not available. Falling back to Haar Cascade.")
-            return cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            return cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')  # More accurate model
     
     def process_frame(self, frame: np.ndarray) -> Optional[float]:
         """
@@ -94,7 +95,7 @@ class FaceHRAnalyzer:
             self.face_lost_count += 1
             if self.face_lost_count > 10:  # Reset if face is lost for too long
                 self._reset_buffers()
-            return self.last_hr
+            return None  # Immediately return None when no face is detected
             
         self.face_lost_count = 0
         
@@ -121,14 +122,54 @@ class FaceHRAnalyzer:
         return self.last_hr
     
     def _detect_face_roi(self, rgb_frame: np.ndarray) -> Optional[FaceROI]:
-        """Detect face and return ROI with face landmarks"""
+        """Detect face and return ROI with face landmarks with strict validation"""
         try:
             if hasattr(self.face_detector, 'process'):  # MediaPipe
+                # Convert to RGB if needed
+                if rgb_frame.shape[2] == 4:  # RGBA to RGB
+                    rgb_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGBA2RGB)
+                elif len(rgb_frame.shape) == 2:  # Grayscale to RGB
+                    rgb_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_GRAY2RGB)
+                
+                # Ensure image is large enough for detection
+                h, w = rgb_frame.shape[:2]
+                if h < 100 or w < 100:  # Minimum size for reliable detection
+                    logger.warning(f"Frame too small for face detection: {w}x{h}")
+                    return None
+                
+                # Process frame
                 results = self.face_detector.process(rgb_frame)
+                
+                # Check if any faces were detected
                 if not results.multi_face_landmarks:
+                    logger.debug("No faces detected in frame")
                     return None
                     
+                # Get the first (and only) face
                 landmarks = results.multi_face_landmarks[0]
+                
+                # Additional validation for face position and size
+                face_landmarks = np.array([(lm.x * w, lm.y * h) for lm in landmarks.landmark])
+                x_min, y_min = face_landmarks.min(axis=0)
+                x_max, y_max = face_landmarks.max(axis=0)
+                face_width = x_max - x_min
+                face_height = y_max - y_min
+                
+                # Check face size (should be at least 15% of the frame dimension)
+                min_face_ratio = 0.15
+                if (face_width < w * min_face_ratio or 
+                    face_height < h * min_face_ratio or
+                    face_width > w * 0.8 or
+                    face_height > h * 0.8):
+                    logger.debug(f"Face size out of bounds: {face_width}x{face_height} in {w}x{h}")
+                    return None
+                    
+                # Check face position (should be reasonably centered)
+                center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
+                if (abs(center_x - w/2) > w * 0.4 or 
+                    abs(center_y - h/2) > h * 0.4):
+                    logger.debug(f"Face not centered: ({center_x}, {center_y}) in {w}x{h}")
+                    return None
                 self.last_face_landmarks = landmarks
                 
                 # Get forehead region (more stable for rPPG)
@@ -187,60 +228,126 @@ class FaceHRAnalyzer:
         self.valid_samples = min(self.valid_samples + 1, self.buffer_size)
     
     def _estimate_heart_rate(self) -> Optional[float]:
-        """Estimate heart rate from the collected signals"""
-        if self.valid_samples < self.sample_rate:  # Need at least 1 second of data
+        """Estimate heart rate from the collected signals with improved stability.
+        
+        Returns:
+            Estimated heart rate in BPM if valid, None otherwise
+        """
+        if self.valid_samples < self.sample_rate * 1.5:  # Need at least 1.5 seconds of data
             return None
             
         try:
             # Use green channel (most sensitive to blood volume changes)
             sig = self.g_signal[:self.valid_samples]
             
-            # Remove DC component and detrend
-            sig = sig - np.mean(sig)
-            sig = sig - np.polyval(np.polyfit(range(len(sig)), sig, 2), range(len(sig)))
+            # 1. Signal Preprocessing
+            # Normalize signal to zero mean and unit variance
+            sig = (sig - np.mean(sig)) / (np.std(sig) + 1e-6)
             
-            # Bandpass filter (0.7 Hz to 4 Hz = 42 to 240 BPM)
+            # Robust detrending using moving average
+            window_size = int(self.sample_rate * 0.5)  # 0.5 second window
+            if window_size % 2 == 0:
+                window_size += 1  # Ensure window size is odd
+                
+            # Apply moving average filter to get trend
+            trend = np.convolve(sig, np.ones(window_size)/window_size, mode='same')
+            sig_detrended = sig - trend
+            
+            # 2. Bandpass Filtering
             nyquist = self.sample_rate / 2
-            low = 0.7 / nyquist
-            high = 4.0 / nyquist
-            b, a = scipy.signal.butter(4, [low, high], btype='band')
-            filtered = scipy.signal.filtfilt(b, a, sig)
+            low = 0.7 / nyquist    # ~42 BPM
+            high = 4.0 / nyquist   # ~240 BPM
             
-            # Find peaks in the time domain
-            peaks, _ = scipy.signal.find_peaks(filtered, distance=self.sample_rate * 0.6)  # Min 0.6s between beats
+            # Use SOS filtering for better numerical stability
+            sos = scipy.signal.butter(4, [low, high], btype='band', output='sos')
+            filtered = scipy.signal.sosfiltfilt(sos, sig_detrended)
             
-            if len(peaks) < 2:  # Need at least 2 peaks
-                return None
-                
-            # Calculate BPM from peak intervals
-            intervals = np.diff(peaks) / self.sample_rate  # Time between peaks in seconds
-            bpm_values = 60.0 / intervals  # Convert to BPM
+            # 3. Time-domain Analysis (Peak Detection)
+            # Find peaks with adaptive thresholding
+            min_peak_distance = int(self.sample_rate * 0.4)  # Max 150 BPM
+            peaks, properties = scipy.signal.find_peaks(
+                filtered,
+                distance=min_peak_distance,
+                prominence=0.1,  # Minimum peak prominence
+                width=3,         # Minimum peak width in samples
+                rel_height=0.5
+            )
             
-            # Filter out unrealistic BPM values
-            valid_bpms = bpm_values[(bpm_values >= self.min_hr_bpm) & (bpm_values <= self.max_hr_bpm)]
+            # 4. Frequency-domain Analysis (FFT)
+            # Calculate power spectrum using Welch's method
+            f, Pxx = scipy.signal.welch(
+                filtered,
+                fs=self.sample_rate,
+                nperseg=min(1024, len(filtered)),
+                window='hann'
+            )
             
-            if len(valid_bpms) == 0:
-                return None
-                
-            # Use median for robustness against outliers
-            hr_estimate = float(np.median(valid_bpms))
-            
-            # Calculate confidence based on signal quality
-            f, Pxx = scipy.signal.welch(filtered, self.sample_rate, nperseg=1024)
+            # Find peak in the heart rate frequency range
             hr_band = (f >= (self.min_hr_bpm/60)) & (f <= (self.max_hr_bpm/60))
-            if len(Pxx) > 0:  # Ensure we have power spectrum data
-                signal_power = np.sum(Pxx[hr_band])
-                noise_band = ~hr_band & (f < (self.sample_rate/2))  # Only consider frequencies up to Nyquist
-                noise_power = np.sum(Pxx[noise_band]) if np.any(noise_band) else 0.1  # Avoid division by zero
+            if not np.any(hr_band):
+                return None
+                
+            # Find the most prominent peak in the HR band
+            f_hr = f[hr_band]
+            Pxx_hr = Pxx[hr_band]
+            peak_idx = np.argmax(Pxx_hr)
+            f_peak = f_hr[peak_idx]
+            hr_fft = f_peak * 60  # Convert to BPM
+            
+            # Calculate signal quality metrics
+            signal_power = np.sum(Pxx_hr)
+            noise_band = (f >= 0.1) & (f <= (self.sample_rate/2)) & ~hr_band
+            noise_power = np.sum(Pxx[noise_band]) if np.any(noise_band) else 0.1
+            
+            # Calculate signal-to-noise ratio (SNR)
+            snr = 10 * np.log10(signal_power / (noise_power + 1e-6))
+            
+            # 5. Combine time and frequency domain estimates
+            hr_estimate = None
+            
+            if len(peaks) >= 2:  # If we have enough peaks for time-domain analysis
+                # Calculate BPM from peak intervals
+                intervals = np.diff(peaks) / self.sample_rate
+                bpm_values = 60.0 / intervals
+                
+                # Filter out unrealistic BPM values
+                valid_bpms = bpm_values[(bpm_values >= self.min_hr_bpm) & 
+                                      (bpm_values <= self.max_hr_bpm)]
+                
+                if len(valid_bpms) > 0:
+                    # Use median for robustness against outliers
+                    hr_time_domain = float(np.median(valid_bpms))
+                    
+                    # Combine time and frequency domain estimates
+                    # Weight more towards FFT if SNR is good
+                    if snr > 5:  # Good SNR
+                        hr_estimate = 0.7 * hr_fft + 0.3 * hr_time_domain
+                    else:  # Poor SNR, trust time domain more
+                        hr_estimate = 0.4 * hr_fft + 0.6 * hr_time_domain
             else:
-                signal_power = 0
-                noise_power = 1
+                # If not enough peaks, use FFT estimate
+                hr_estimate = hr_fft
             
-            self.hr_confidence = signal_power / (signal_power + noise_power + 1e-6)
-            
-            # Only return if confidence is high enough
-            if self.hr_confidence > 0.3:  # 30% confidence threshold
-                return hr_estimate
+            # Ensure the final estimate is within valid range
+            if hr_estimate is not None:
+                hr_estimate = max(self.min_hr_bpm, min(self.max_hr_bpm, hr_estimate))
+                
+                # Calculate confidence based on SNR and peak quality
+                snr_confidence = min(1.0, snr / 10.0)  # Normalize SNR to 0-1 range
+                peak_confidence = len(peaks) / (len(filtered) / (self.sample_rate * 0.8))  # Expected peaks per second
+                peak_confidence = min(1.0, peak_confidence)  # Cap at 1.0
+                
+                self.hr_confidence = 0.7 * snr_confidence + 0.3 * peak_confidence
+                
+                # Only return if confidence is high enough
+                if self.hr_confidence > 0.35:  # 35% confidence threshold
+                    # Smooth with previous estimate if available
+                    if self.last_hr is not None:
+                        # Use adaptive smoothing based on confidence
+                        alpha = 0.3 + (0.5 * self.hr_confidence)  # 0.3-0.8 smoothing factor
+                        hr_estimate = (alpha * self.last_hr + (1 - alpha) * hr_estimate)
+                    
+                    return float(hr_estimate)
             
         except Exception as e:
             logger.error(f"Error in HR estimation: {str(e)}", exc_info=True)

@@ -26,15 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class HeartRateService:
-    def _butter_bandpass_filter(self, data, lowcut=0.75, highcut=4.0, fs=25, order=3):
+    def _butter_bandpass_filter(self, data, lowcut=0.7, highcut=3.0, fs=25, order=4):
         """Apply a bandpass filter to the input signal with improved parameters.
         
         Args:
             data: Input signal
-            lowcut: Low cutoff frequency in Hz (default: 0.75 Hz ~ 45 BPM)
-            highcut: High cutoff frequency in Hz (default: 4.0 Hz ~ 240 BPM)
+            lowcut: Low cutoff frequency in Hz (default: 0.7 Hz ~ 42 BPM)
+            highcut: High cutoff frequency in Hz (default: 3.0 Hz ~ 180 BPM)
             fs: Sampling frequency in Hz (default: 25)
-            order: Filter order (default: 3)
+            order: Filter order (default: 4)
             
         Returns:
             Filtered signal
@@ -53,10 +53,10 @@ class HeartRateService:
                 
             normalized_data = (data - mean_val) / std_val
             
-            # Design bandpass filter
+            # Design the filter with more aggressive roll-off
             nyq = 0.5 * fs
-            low = max(0.1, lowcut / nyq)  # Ensure low is not zero
-            high = min(0.95, highcut / nyq)  # Ensure high is below Nyquist
+            low = max(0.1, lowcut) / nyq  # Ensure we don't go below 0.1 Hz
+            high = min(highcut, nyq * 0.95) / nyq  # Stay below Nyquist
             
             # Use SOS (second-order sections) for better numerical stability
             sos = scipy.signal.butter(order, [low, high], btype='band', output='sos')
@@ -336,15 +336,19 @@ class HeartRateService:
         # Initialize circular buffers for PPG signals (RGB channels)
         self.ppg_buffer = np.zeros((buffer_size, 3))  # For RGB values
         
-        # Initialize MediaPipe Face Mesh with optimized settings for speed
+        # Initialize MediaPipe Face Mesh with strict settings for accuracy
         self.mp_face_mesh = mp.solutions.face_mesh
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             max_num_faces=1,
-            refine_landmarks=False,  # Disable refinement for speed
-            min_detection_confidence=0.4,  # Lower threshold for faster detection
-            min_tracking_confidence=0.4,   # Lower threshold for faster tracking
-            static_image_mode=False  # Optimize for video
+            refine_landmarks=True,  # Enable refinement for better accuracy
+            min_detection_confidence=0.7,  # Higher threshold for better quality
+            min_tracking_confidence=0.7,   # Higher threshold for stable tracking
+            static_image_mode=False
         )
+        # Face detection parameters
+        self.min_face_size_ratio = 0.2  # Minimum face size as ratio of frame dimension
+        self.max_face_size_ratio = 0.8  # Maximum face size as ratio of frame dimension
+        self.face_center_threshold = 0.3  # How centered the face needs to be (0-1)
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
@@ -410,6 +414,24 @@ class HeartRateService:
         
         logger.info(f"Initialized with buffer size: {self.buffer_size}, sample rate: {self.sample_rate}")
         
+    def _get_no_face_response(self, specific_error=None):
+        """Helper to generate consistent no-face responses"""
+        response = {
+            "face_detected": False,
+            "error": specific_error or "No face detected. Please ensure your face is:",
+            "guidance": [
+                "Positioned in the center of the frame",
+                "Facing the camera directly",
+                "Well-lit with even lighting (avoid backlight)",
+                "At arm's length from the camera",
+                "Not wearing glasses or accessories that cover your face"
+            ],
+            "bpm": None,
+            "spo2": None,
+            "signal_quality": 0.0
+        }
+        return response
+        
     async def process_frame(self, frame_data: bytes) -> Dict[str, Any]:
         """Process a single frame and return heart rate and SpO2 metrics"""
         # Initialize variables
@@ -461,14 +483,62 @@ class HeartRateService:
             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
                 
             # Process frame with face analyzer
-            face_bpm = self.face_analyzer.process_frame(frame)
-            if face_bpm is not None:
-                current_bpm = face_bpm
-                signal_quality = 0.8  # Higher confidence for face-based detection
-            
-            # Fall back to traditional method if face analysis fails
-            if current_bpm is None:
-                logger.debug("Falling back to traditional signal processing")
+            try:
+                # First, check if we can detect a face with MediaPipe directly
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = self.face_mesh.process(rgb_frame)
+                
+                if not results.multi_face_landmarks:
+                    logger.debug("No faces detected by MediaPipe")
+                    return self._get_no_face_response("No face detected. Please look at the camera.")
+                
+                # Get face landmarks for validation
+                landmarks = results.multi_face_landmarks[0]
+                h, w = frame.shape[:2]
+                
+                # Convert landmarks to numpy array for processing
+                face_landmarks = np.array([(lm.x * w, lm.y * h) 
+                                        for lm in landmarks.landmark])
+                
+                # Calculate face bounding box
+                x_min, y_min = face_landmarks.min(axis=0)
+                x_max, y_max = face_landmarks.max(axis=0)
+                face_width = x_max - x_min
+                face_height = y_max - y_min
+                
+                # Validate face size
+                min_face_size = min(h, w) * self.min_face_size_ratio
+                max_face_size = max(h, w) * self.max_face_size_ratio
+                
+                if (face_width < min_face_size or face_height < min_face_size):
+                    logger.debug(f"Face too small: {face_width}x{face_height}")
+                    return self._get_no_face_response("Move closer to the camera")
+                    
+                if (face_width > max_face_size or face_height > max_face_size):
+                    logger.debug(f"Face too large: {face_width}x{face_height}")
+                    return self._get_no_face_response("Move slightly further from the camera")
+                
+                # Validate face position (should be centered)
+                center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
+                x_offset = abs(center_x - w/2) / (w/2)  # Normalized offset from center (0-1)
+                y_offset = abs(center_y - h/2) / (h/2)
+                
+                if x_offset > self.face_center_threshold or y_offset > self.face_center_threshold:
+                    logger.debug(f"Face not centered: x_offset={x_offset:.2f}, y_offset={y_offset:.2f}")
+                    return self._get_no_face_response("Please center your face in the frame")
+                
+                # If we get here, face is valid - process with face analyzer
+                face_bpm = self.face_analyzer.process_frame(frame)
+                if face_bpm is not None:
+                    current_bpm = face_bpm
+                    signal_quality = 0.8  # Higher confidence for face-based detection
+                else:
+                    logger.debug("Face detected but could not estimate BPM")
+                    return self._get_no_face_response("Hold still and ensure good lighting")
+                    
+            except Exception as e:
+                logger.error(f"Error processing face detection: {str(e)}")
+                return self._get_no_face_response(f"Error: {str(e)}")
             
             # Skip frames to reduce processing load
             self.frame_skip_counter = (self.frame_skip_counter + 1) % self.frame_skip_interval
@@ -524,12 +594,150 @@ class HeartRateService:
             logger.error(f"Error processing frame: {str(e)}", exc_info=True)
             return {"face_detected": False, "error": str(e)}
 
+    def _are_landmarks_visible(self, landmarks, frame_shape):
+        """Check if essential facial landmarks are within frame bounds"""
+        h, w = frame_shape[:2]
+        margin = 0.05  # 5% margin from edges
+        
+        # Define essential landmarks (indices from MediaPipe face mesh)
+        # Left eye, right eye, nose tip, chin, left/right ear, forehead
+        ESSENTIAL_LANDMARKS = [
+            133, 33, 155, 154, 153,  # Left eye
+            362, 263, 373, 374, 380,  # Right eye
+            1, 4, 6, 168, 2, 5,  # Nose and bridge
+            151, 200, 199, 175,  # Forehead
+            234, 454,  # Left ear
+            454, 323   # Right ear
+        ]
+        
+        for idx in ESSENTIAL_LANDMARKS:
+            if idx < len(landmarks.landmark):
+                x = landmarks.landmark[idx].x
+                y = landmarks.landmark[idx].y
+                if not (margin <= x <= (1 - margin) and margin <= y <= (1 - margin)):
+                    return False, f"Face partially out of frame (landmark {idx})"
+        return True, ""
+
+    def _validate_facial_features(self, landmarks, frame_shape):
+        """Validate that eyes, nose, and other key features are visible"""
+        try:
+            h, w = frame_shape[:2]
+            
+            # Check eyes are open (using eye landmarks)
+            left_eye_upper = landmarks.landmark[159]  # Left eye upper
+            left_eye_lower = landmarks.landmark[145]  # Left eye lower
+            right_eye_upper = landmarks.landmark[386]  # Right eye upper
+            right_eye_lower = landmarks.landmark[374]  # Right eye lower
+            
+            # Calculate eye aspect ratio (simplified)
+            left_eye_ar = abs(left_eye_upper.y - left_eye_lower.y)
+            right_eye_ar = abs(right_eye_upper.y - right_eye_lower.y)
+            
+            if left_eye_ar < 0.01 or right_eye_ar < 0.01:
+                return False, "Eyes must be open and visible"
+            
+            # Check nose visibility (nose tip should be between eyes and mouth)
+            nose_tip = landmarks.landmark[4]  # Nose tip
+            left_eye = landmarks.landmark[33]  # Left eye inner corner
+            right_eye = landmarks.landmark[263]  # Right eye inner corner
+            mouth_center = landmarks.landmark[13]  # Mouth center
+            
+            if not (left_eye.y < nose_tip.y < mouth_center.y and 
+                    left_eye.x < nose_tip.x < right_eye.x):
+                return False, "Nose not properly visible"
+                
+            # Check face orientation (simple check using nose and eyes)
+            eye_center_x = (left_eye.x + right_eye.x) / 2
+            if abs(nose_tip.x - eye_center_x) > 0.1:  # Nose should be centered between eyes
+                return False, "Please face the camera directly"
+                
+            return True, ""
+            
+        except Exception as e:
+            logger.error(f"Error in facial feature validation: {str(e)}")
+            return False, f"Error validating facial features: {str(e)}"
+
+    def _validate_face_position(self, frame):
+        """Validate face position, size, and feature visibility"""
+        try:
+            if frame is None or frame.size == 0:
+                return False, "Invalid frame"
+                
+            # Convert to RGB for MediaPipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.face_mesh.process(rgb_frame)
+            
+            if not results.multi_face_landmarks:
+                return False, "No face detected"
+                
+            # Get face landmarks
+            landmarks = results.multi_face_landmarks[0]
+            h, w = frame.shape[:2]
+            
+            # Check if all essential landmarks are within frame
+            landmarks_visible, msg = self._are_landmarks_visible(landmarks, frame.shape)
+            if not landmarks_visible:
+                return False, msg
+            
+            # Validate facial features (eyes, nose, etc.)
+            features_valid, msg = self._validate_facial_features(landmarks, frame.shape)
+            if not features_valid:
+                return False, msg
+            
+            # Convert landmarks to numpy array for processing
+            face_landmarks = np.array([(lm.x * w, lm.y * h) 
+                                    for lm in landmarks.landmark])
+            
+            # Calculate face bounding box
+            x_min, y_min = face_landmarks.min(axis=0)
+            x_max, y_max = face_landmarks.max(axis=0)
+            face_width = x_max - x_min
+            face_height = y_max - y_min
+            
+            # Validate face size
+            min_face_size = min(h, w) * self.min_face_size_ratio
+            max_face_size = max(h, w) * self.max_face_size_ratio
+            
+            if (face_width < min_face_size or face_height < min_face_size or
+                face_width > max_face_size or face_height > max_face_size):
+                return False, "Adjust distance - face too small or large"
+            
+            # Validate face position (should be centered)
+            center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
+            x_offset = abs(center_x - w/2) / (w/2)
+            y_offset = abs(center_y - h/2) / (h/2)
+            
+            if x_offset > self.face_center_threshold or y_offset > self.face_center_threshold:
+                return False, "Please center your face in the frame"
+                
+            return True, ""
+            
+        except Exception as e:
+            logger.error(f"Error in face validation: {str(e)}")
+            return False, f"Validation error: {str(e)}"
+            
     def _process_face_frame(self, frame, face_roi, face_rect):
         try:
             # Initialize green buffer if it doesn't exist
             if not hasattr(self, 'green_buffer'):
                 self.green_buffer = np.zeros(self.buffer_size)
                 logger.info(f"Initialized green buffer with size: {self.buffer_size}")
+                
+            # Validate face position during measurement
+            if hasattr(self, 'valid_samples') and self.valid_samples > 0:
+                is_valid, error_msg = self._validate_face_position(frame)
+                if not is_valid:
+                    logger.debug(f"Face validation failed during measurement: {error_msg}")
+                    # Reset buffer to force re-initialization
+                    self.valid_samples = 0
+                    self.buffer_index = 0
+                    return {
+                        "face_detected": False,
+                        "error": f"Face position lost: {error_msg}",
+                        "bpm": None,
+                        "spo2": None,
+                        "signal_quality": 0.0
+                    }
             
             # Extract mean green value from the face ROI
             try:
@@ -801,41 +1009,26 @@ class HeartRateService:
             
             # Get the frequency with maximum power among the peaks
             max_peak_idx = peaks[np.argmax(properties['peak_heights'])]
-            dominant_freq = freq_range[max_peak_idx]
-            
-            # Calculate signal quality metrics
-            signal_quality = self._calculate_signal_quality(filtered_signal)
-            
-            # Convert frequency to BPM
             bpm = dominant_freq * 60.0
             
-            # Apply signal quality weighting
-            if signal_quality < 0.3:  # Low quality signal
-                logger.debug(f"Low signal quality: {signal_quality:.2f}")
-                return None
-                
-            # Ensure BPM is within physiological range (40-180 BPM)
-            if bpm < 40 or bpm > 180:
-                logger.debug(f"BPM {bpm:.1f} outside physiological range (40-180 BPM)")
+            # Additional validation
+            if bpm < 40 or bpm > 180:  # Tightened physiological range check
+                logger.debug(f"BPM outside physiological range: {bpm:.1f}")
                 return None
             
-            # Apply smoothing if we have previous BPM values
-            if hasattr(self, 'last_valid_bpms'):
-                self.last_valid_bpms.append(bpm)
-                if len(self.last_valid_bpms) > 5:  # Keep last 5 readings
-                    self.last_valid_bpms.pop(0)
-                # Use median of last few readings for stability
-                bpm = np.median(self.last_valid_bpms)
-            else:
-                self.last_valid_bpms = [bpm]
+            # Signal quality assessment
+            peak_snr = properties['peak_heights'][max_peak_idx] / (median_power + 1e-10)
+            if peak_snr < 2.0:  # Require at least 2x signal-to-noise ratio
+                logger.debug(f"Insufficient peak SNR: {peak_snr:.2f}")
+                return None
                 
-            logger.info(f"Detected BPM: {bpm:.1f}, Signal Quality: {signal_quality:.2f}")
-            return bpm
+            # If we get here, we have a valid BPM
+            return float(bpm)
             
         except Exception as e:
             logger.error(f"Error in FFT analysis: {str(e)}", exc_info=True)
             return None
-
+            
     def estimate_heart_rate(self, ppg_signal):
         """
         Estimate heart rate with enhanced stability and signal quality checks.

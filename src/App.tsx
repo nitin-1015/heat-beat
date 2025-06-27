@@ -262,6 +262,15 @@ function App() {
 
           const metrics: HealthMetrics = data;
 
+          if (metrics.face_detected !== undefined) {
+            setIsFaceDetected(metrics.face_detected);
+            if (!metrics.face_detected) {
+              setStatus(metrics.error || "No face detected. Please adjust your position.");
+            } else {
+              setStatus("");
+            }
+          }
+
           if (metrics.error) {
             console.error('Server error:', metrics.error);
             setStatus(`Error: ${metrics.error}`);
@@ -939,10 +948,19 @@ function App() {
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
               <CameraView
-                videoRef={ videoRef }
-                isMonitoring={ isMonitoring }
-                signalQuality={ signalQuality }
-                facePosition={ facePosition }
+                 videoRef={videoRef}
+                 isMonitoring={isMonitoring}
+                 signalQuality={signalQuality}
+                 facePosition={facePosition}
+                 isFaceDetected={isFaceDetected}
+                 faceDetectionError={status}
+                 guidance={[
+                   "Positioned in the center of the frame",
+                   "Facing the camera directly",
+                   "Well-lit with even lighting",
+                   "At arm's length from the camera",
+                   "Not wearing glasses or accessories that cover your face"
+                 ]}
               />
               {/* WebSocket Connection Status */ }
               {/* <div className="text-xs text-center mb-2">
