@@ -71,6 +71,11 @@ class ConnectionManager:
 # Initialize connection manager
 manager = ConnectionManager()
 
+def is_websocket_connected(websocket: WebSocket) -> bool:
+    """Check if WebSocket is still connected."""
+    client_state = websocket.client_state
+    return client_state.value == 1  # 1 = WebSocketState.CONNECTED
+
 @app.websocket("/ws/heart-rate")
 async def websocket_endpoint(websocket: WebSocket):
     client_id = f"{websocket.client.host}:{websocket.client.port}"
@@ -83,15 +88,24 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info(f"Successfully connected WebSocket for {client_id}")
         await asyncio.sleep(0.1)
 
+        # Main WebSocket message loop
         while True:
             try:
+                # Check if WebSocket is still connected
+                if not is_websocket_connected(websocket):
+                    logger.warning(f"WebSocket connection lost for {client_id}")
+                    break
+                    
                 # Receive frame data with timeout
-                logger.debug(f"Waiting for frame data from {client_id}...")
-                frame_data = await asyncio.wait_for(
-                    websocket.receive_bytes(),
-                    timeout=30.0  # 30 seconds timeout for receiving data
-                )
-                
+                try:
+                    frame_data = await asyncio.wait_for(
+                        websocket.receive_bytes(),
+                        timeout=30.0  # 30 seconds timeout for receiving data
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(f"No data received from {client_id} within timeout")
+                    continue  # Skip to next iteration to check connection again
+                    
                 logger.debug(f"Received {len(frame_data)} bytes from {client_id}")
                 
                 # Process frame
@@ -129,20 +143,29 @@ async def websocket_endpoint(websocket: WebSocket):
             except asyncio.TimeoutError:
                 logger.warning(f"No data received from {client_id} for 30 seconds, sending ping...")
                 try:
+                    # Check if WebSocket is still connected before sending ping
+                    if not is_websocket_connected(websocket):
+                        logger.warning(f"WebSocket disconnected while preparing ping for {client_id}")
+                        break
+                        
                     # Send ping to check if client is still alive
                     ping_msg = {"type": "ping", "timestamp": time.time()}
                     await websocket.send_json(ping_msg)
                     logger.debug(f"Sent ping to {client_id}")
                     
                     # Wait for pong with a short timeout
-                    pong = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
-                    if pong.lower() != 'pong':
-                        logger.warning(f"Invalid pong received from {client_id}: {pong}")
-                        raise WebSocketDisconnect(1006, "Invalid pong received")
-                    logger.debug(f"Received pong from {client_id}")
-                    
-                except (asyncio.TimeoutError, WebSocketDisconnect) as e:
-                    logger.warning(f"Client {client_id} connection timed out: {str(e)}")
+                    try:
+                        pong = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+                        if pong.lower() != 'pong':
+                            logger.warning(f"Invalid pong received from {client_id}: {pong}")
+                            raise WebSocketDisconnect(1006, "Invalid pong received")
+                        logger.debug(f"Received pong from {client_id}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Ping timeout for {client_id}, disconnecting...")
+                        break
+                        
+                except WebSocketDisconnect as e:
+                    logger.warning(f"Client {client_id} disconnected during ping: {str(e)}")
                     break
                 except Exception as e:
                     logger.error(f"Ping error for {client_id}: {str(e)}", exc_info=True)
@@ -165,3 +188,5 @@ async def websocket_endpoint(websocket: WebSocket):
             if not isinstance(e, asyncio.CancelledError):
                 raise
         logger.info(f"WebSocket connection closed for {client_id}")
+    
+    return None

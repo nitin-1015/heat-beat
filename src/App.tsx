@@ -227,17 +227,16 @@ function App() {
             console.warn('Received empty WebSocket message');
             return;
           }
-
+          
           // Handle both string and binary data
           let data: HealthMetrics | { type: string };
           if (typeof event.data === 'string') {
             try {
               data = JSON.parse(event.data);
-              console.log('Received JSON message:', data); // Debug log
+              // console.warn('Received WebSocket message',data);
 
               // Handle ping/pong messages
               if ('type' in data && data.type === 'ping') {
-                console.log('Received ping from server, sending pong');
                 if (wsRef.current?.readyState === WebSocket.OPEN) {
                   wsRef.current.send('pong');
                 }
@@ -262,7 +261,6 @@ function App() {
           }
 
           const metrics: HealthMetrics = data;
-          console.log('Received metrics:', metrics); // Debug log
 
           if (metrics.error) {
             console.error('Server error:', metrics.error);
@@ -538,7 +536,6 @@ function App() {
     if (!isCapturingRef.current) return;
 
     if (USE_MOCK_MODE) {
-      console.log('Processing frame in mock mode');
       try {
         if (videoRef.current && canvasRef.current) {
           const video = videoRef.current;
@@ -623,7 +620,6 @@ function App() {
                   try {
                     if (reader.result && wsRef.current?.readyState === WebSocket.OPEN) {
                       wsRef.current.send(reader.result);
-                      console.log('Frame sent successfully');
                     }
                   } catch (error) {
                     console.error('Error in sending frame:', error);
@@ -1026,7 +1022,7 @@ function App() {
               <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">
                 Heart Rate History
               </h2>
-              <div className="h-[300px]">
+              <div className="h-[250px]">
                 <BPMChart data={ bpmHistoryGraph } />
               </div>
               { averageBpm && (
@@ -1042,7 +1038,7 @@ function App() {
               <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">
                 Oxygen Saturation History
               </h2>
-              <div className="h-[300px]">
+              <div className="h-[250px]">
                 <SpO2Chart data={ spo2HistoryGraph } />
               </div>
               { averageSpO2 && (
