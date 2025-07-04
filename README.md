@@ -12,6 +12,43 @@ Built with React, TypeScript, and TensorFlow.js, it uses the MediaPipe Face Mesh
 - Updates every 3 seconds for accurate measurements
 - User-friendly interface with clear visual feedback
 
+## Deployment
+
+### Prerequisites
+- Docker installed on your machine
+- Docker Hub account with repository access
+- Docker Hub access token with push permissions
+
+### Deployment Steps
+
+1. **Set up environment variables**
+   Create a `.env` file in the project root with the following variables:
+   ```
+   VITE_API_URL=https://your-backend-api-url.com
+   VITE_WS_URL=wss://your-websocket-url.com
+   DOCKER_TOKEN=your_docker_hub_token
+   ```
+
+2. **Make the deployment script executable**
+   ```bash
+   chmod +x deploy.sh
+   ```
+
+3. **Run the deployment script**
+   ```bash
+   ./deploy.sh
+   ```
+
+   This will:
+   - Build the Docker image
+   - Tag it with your Docker Hub username
+   - Log in to Docker Hub
+   - Push the image to your repository
+   - Trigger the deployment webhook
+
+4. **Verify deployment**
+   Check your deployment platform (e.g., Render.com) to monitor the deployment status.
+
 ## Tech Stack
 
 ### Frontend

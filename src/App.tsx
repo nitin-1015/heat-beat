@@ -197,8 +197,10 @@ function App() {
     console.log(`Attempting to connect to WebSocket (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
 
     try {
-      // Create new WebSocket connection without protocol specification
-      const ws = new WebSocket('ws://localhost:8000/ws/heart-rate');
+      // Create new WebSocket connection using environment variable
+      const wsUrl = import.meta.env.VITE_WS_URL;
+      const wsPath = wsUrl.endsWith('/') ? 'ws/heart-rate' : '/ws/heart-rate';
+      const ws = new WebSocket(`${wsUrl}${wsPath}`);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
@@ -1015,7 +1017,7 @@ function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-2 gap-3 sm:gap-6">
               <HeartRateDisplay
                 bpm={ bpm }
                 isMonitoring={ isMonitoring }
@@ -1046,7 +1048,7 @@ function App() {
               { averageBpm && (
                 <div className="mt-4 p-4 bg-teal-50 dark:bg-teal-900 rounded-lg">
                   <p className="font-semibold text-teal-600 dark:text-teal-400">
-                    Final Average BPM: { averageBpm.toFixed(1) }
+                    Final Average BPM: { Math.round(averageBpm) }
                   </p>
                 </div>
               ) }

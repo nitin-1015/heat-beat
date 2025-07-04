@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-https://keval-fst-health-vital-backend.hf.space}
+        - VITE_WS_URL=${VITE_WS_URL:-wss://keval-fst-health-vital-backend.hf.space}
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-https://keval-fst-health-vital-backend.hf.space}
+      - VITE_WS_URL=${VITE_WS_URL:-wss://keval-fst-health-vital-backend.hf.space}
+    restart: unless-stopped
+    networks:
+      - heat-beat-network
+
+networks:
+  heat-beat-network:
+    driver: bridge

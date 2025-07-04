@@ -1,0 +1,22 @@
+# Render Blueprint for Heat-Beat Application
+# Reference: https://render.com/docs/blueprint-spec
+
+services:
+  # Frontend Service (React/Vite)
+  - type: web
+    name: heat-beat-frontend
+    env: node
+    build:
+      dockerfile: ./Dockerfile
+      target: production
+    envVars:
+      - key: VITE_API_URL
+        value: "https://keval-fst-health-vital-backend.hf.space"
+      - key: VITE_WS_URL
+        value: "wss://keval-fst-health-vital-backend.hf.space"
+    routes:
+      - type: rewrite
+        source: "/*"
+        destination: "/index.html"
+    plan: free
+    autoDeploy: true

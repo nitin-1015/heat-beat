@@ -43,7 +43,7 @@ const BPMChart: React.FC<BPMChartProps> = ({ data }) => {
       typeof item.value === 'number' && 
       !isNaN(item.value) && 
       item.value >= 40 && 
-      item.value <= 200
+      item.value <= 100
     );
     
     if (validData.length === 0) return [];
@@ -159,9 +159,9 @@ const BPMChart: React.FC<BPMChartProps> = ({ data }) => {
       y: {
         beginAtZero: false,
         min: 40,  // Fixed minimum for BPM
-        max: 220, // Fixed maximum for BPM
+        max: 80, // Initial maximum for BPM
         suggestedMin: 40,  // Suggested minimum that can auto-adjust
-        suggestedMax: 220, // Suggested maximum that can auto-adjust
+        suggestedMax: 220, // Suggested maximum that can auto-adjust up to 220
         title: {
           display: true,
           text: 'BPM',
@@ -184,7 +184,7 @@ const BPMChart: React.FC<BPMChartProps> = ({ data }) => {
             size: 12,
             family: "'Inter', sans-serif"
           },
-          padding: 8,
+          padding: 5,
           callback: (value) => `${value} BPM`
         }
       }

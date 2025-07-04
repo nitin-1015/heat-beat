@@ -14,23 +14,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Set environment variables for cache directories
+import os
+os.makedirs('/tmp/matplotlib', exist_ok=True)
+os.environ['MPLCONFIGDIR'] = '/tmp/matplotlib'
+os.environ['TRANSFORMERS_CACHE'] = '/tmp/huggingface'
+os.makedirs('/tmp/huggingface', exist_ok=True)
+
 app = FastAPI()
 
-# Configure CORS with more specific settings
+# Configure CORS to allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite default port
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",  # Also allow React default port
-        "http://127.0.0.1:3000"
-    ],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?"  # Allow any localhost port for development
+    expose_headers=["*"]
 )
+
+@app.get("/")
+async def root():
+    return {"message": "Heart Rate API is running"}
 
 # Initialize heart rate service
 logger.info("Initializing FastAPI application...")

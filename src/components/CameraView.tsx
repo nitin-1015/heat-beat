@@ -31,7 +31,7 @@ const CameraView: React.FC<CameraViewProps> = ({
   const signalWidth = `${Math.max(10, signalQuality * 100)}%`;
 
   return (
-    <div className="relative aspect-video bg-gray-100 dark:bg-gray-700 rounded-lg overflow-hidden">
+    <div className="relative w-full h-[50vh] sm:aspect-video sm:h-auto bg-gray-100 dark:bg-gray-700 sm:rounded-lg overflow-hidden">
       {/* Camera feed placeholder */ }
       { !isMonitoring && (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -56,13 +56,9 @@ const CameraView: React.FC<CameraViewProps> = ({
         />
         
         {/* Round face detection guide */}
-        {isMonitoring && (
+        {isMonitoring && !isFaceDetected && (
           <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full border-4 border-white/30 pointer-events-none">
-            {isFaceDetected ? (
-              <div className="absolute inset-0 rounded-full border-4 border-green-400 animate-pulse" />
-            ) : (
-              <div className="absolute inset-0 rounded-full border-4 border-red-400/50" />
-            )}
+            <div className="absolute inset-0 rounded-full border-4 border-red-400/50" />
             
             {/* Center crosshair */}
             <div className="absolute top-1/2 left-1/2 w-4 h-0.5 bg-white/50 transform -translate-x-1/2 -translate-y-1/2" />
@@ -73,6 +69,14 @@ const CameraView: React.FC<CameraViewProps> = ({
             <div className="absolute bottom-2 left-1/2 w-1 h-2 bg-white/50 transform -translate-x-1/2" />
             <div className="absolute left-2 top-1/2 w-2 h-1 bg-white/50 transform -translate-y-1/2" />
             <div className="absolute right-2 top-1/2 w-2 h-1 bg-white/50 transform -translate-y-1/2" />
+          </div>
+        )}
+        
+        {/* Face detected indicator */}
+        {isMonitoring && isFaceDetected && (
+          <div className="absolute top-4 right-4 bg-green-500/80 text-white text-xs px-2 py-1 rounded-full flex items-center">
+            <span className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></span>
+            Face detected
           </div>
         )}
       </div>
@@ -86,8 +90,8 @@ const CameraView: React.FC<CameraViewProps> = ({
       </div>
 
       {/* Face positioning guides */ }
-      { isMonitoring && (
-        <div className="absolute inset-0 border-4 border-dashed border-white/20 rounded-lg pointer-events-none" />
+      { isMonitoring && !isFaceDetected && (
+        <div className="absolute inset-0 border-4 border-dashed border-white/20 sm:rounded-lg pointer-events-none" />
       ) }
 
       {/* Face position feedback */ }
