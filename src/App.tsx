@@ -207,7 +207,6 @@ function App() {
       ws.onopen = () => {
         console.log('WebSocket connection established successfully');
         reconnectAttemptsRef.current = 0;
-        setStatus('Connected to server - Starting frame capture...');
         setIsConnected(true);
 
         // If we're already capturing, restart frame capture with a small delay

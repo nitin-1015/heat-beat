@@ -1,4 +1,4 @@
-import { RefObject } from 'react';
+import { RefObject, useEffect, useState } from 'react';
 import { Camera } from 'lucide-react';
 
 interface CameraViewProps {
@@ -20,7 +20,24 @@ const CameraView: React.FC<CameraViewProps> = ({
   guidance = [],
   isFaceDetected = false,
 }) => {
-  // Calculate signal quality color
+  const [showInitialGuide, setShowInitialGuide] = useState(true);
+  const [hasShownInitialGuide, setHasShownInitialGuide] = useState(false);
+
+  useEffect(() => {
+    if (isMonitoring && !hasShownInitialGuide) {
+      const timer = setTimeout(() => {
+        setShowInitialGuide(false);
+        setHasShownInitialGuide(true);
+      }, 2000); // 2 seconds
+      
+      return () => clearTimeout(timer);
+    } else if (!isMonitoring) {
+      // Reset when monitoring is stopped
+      setShowInitialGuide(true);
+      setHasShownInitialGuide(false);
+    }
+  }, [isMonitoring, hasShownInitialGuide]);
+
   const getSignalColor = (quality: number) => {
     if (quality > 0.7) return 'bg-green-500';
     if (quality > 0.4) return 'bg-yellow-500';
@@ -55,30 +72,28 @@ const CameraView: React.FC<CameraViewProps> = ({
           style={ { transform: 'scaleX(-1)' } }
         />
         
-        {/* Round face detection guide */}
-        {isMonitoring && !isFaceDetected && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full border-4 border-white/30 pointer-events-none">
-            <div className="absolute inset-0 rounded-full border-4 border-red-400/50" />
+        {/* Round face detection guide - Only show for first 2 seconds when monitoring starts and no error */}
+        {isMonitoring && showInitialGuide && !isFaceDetected && !faceDetectionError && (
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full border-4 border-red-500/70 pointer-events-none z-10">
+            <div className="absolute inset-0 rounded-full border-4 border-yellow-400/70 animate-pulse" />
             
             {/* Center crosshair */}
-            <div className="absolute top-1/2 left-1/2 w-4 h-0.5 bg-white/50 transform -translate-x-1/2 -translate-y-1/2" />
-            <div className="absolute top-1/2 left-1/2 h-4 w-0.5 bg-white/50 transform -translate-x-1/2 -translate-y-1/2" />
+            <div className="absolute top-1/2 left-1/2 w-6 h-0.5 bg-red-400 transform -translate-x-1/2 -translate-y-1/2" />
+            <div className="absolute top-1/2 left-1/2 h-6 w-0.5 bg-red-400 transform -translate-x-1/2 -translate-y-1/2" />
             
             {/* Position indicators */}
-            <div className="absolute top-2 left-1/2 w-1 h-2 bg-white/50 transform -translate-x-1/2" />
-            <div className="absolute bottom-2 left-1/2 w-1 h-2 bg-white/50 transform -translate-x-1/2" />
-            <div className="absolute left-2 top-1/2 w-2 h-1 bg-white/50 transform -translate-y-1/2" />
-            <div className="absolute right-2 top-1/2 w-2 h-1 bg-white/50 transform -translate-y-1/2" />
+            <div className="absolute top-3 left-1/2 w-1 h-3 bg-red-400 transform -translate-x-1/2" />
+            <div className="absolute bottom-3 left-1/2 w-1 h-3 bg-red-400 transform -translate-x-1/2" />
+            <div className="absolute left-3 top-1/2 w-3 h-1 bg-red-400 transform -translate-y-1/2" />
+            <div className="absolute right-3 top-1/2 w-3 h-1 bg-red-400 transform -translate-y-1/2" />
+            
+            {/* Help text */}
+            <div className="absolute -bottom-8 left-0 right-0 text-center text-white text-xs font-medium">
+              Position your face within the circle
+            </div>
           </div>
         )}
         
-        {/* Face detected indicator */}
-        {isMonitoring && isFaceDetected && (
-          <div className="absolute top-4 right-4 bg-green-500/80 text-white text-xs px-2 py-1 rounded-full flex items-center">
-            <span className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></span>
-            Face detected
-          </div>
-        )}
       </div>
 
       {/* Signal quality indicator */ }
@@ -109,19 +124,17 @@ const CameraView: React.FC<CameraViewProps> = ({
         />
       ) }
 
-      {/* Status messages */ }
-      { isMonitoring && (
+      {/* Status messages - only show when there's content */ }
+      {isMonitoring && (signalQuality <= 0.7) && (
         <div className="absolute top-2 left-2 right-2 text-center">
           <div className="inline-block bg-black/70 text-white text-xs px-2 py-1 rounded">
-            { signalQuality > 0.7 ? '' :
-              signalQuality > 0.4 ? 'Weak signal' : '✗ Adjust position' }
-            {/* {signalQuality > 0 && ` (${Math.round((signalQuality) * 100)}%)`} */ }
+            {signalQuality > 0.4 ? 'Weak signal' : '✗ Adjust position'}
           </div>
         </div>
-      ) }
-      {/* Face detection guidance overlay */ }
-      { isMonitoring && !isFaceDetected && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 p-4">
+      )}
+      {/* Face detection guidance overlay - Only show when there's an error and not showing initial guide */}
+      { isMonitoring && !isFaceDetected && faceDetectionError && !showInitialGuide && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 p-4 z-20">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 max-w-md w-full">
             <div className="text-center mb-4">
               <div className="text-2xl mb-2">👤</div>
@@ -129,7 +142,7 @@ const CameraView: React.FC<CameraViewProps> = ({
                 No Face Detected
               </h3>
               <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
-                { faceDetectionError || "Please ensure your face is:" }
+                {faceDetectionError}
               </p>
               { guidance && guidance.length > 0 && (
                 <ul className="text-left text-sm text-gray-700 dark:text-gray-300 space-y-1">
