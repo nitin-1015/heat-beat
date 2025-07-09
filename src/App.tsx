@@ -936,10 +936,11 @@ function App() {
       <header className="bg-white dark:bg-gray-800 shadow-sm">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center gap-2">
-            <Heart className="text-teal-600 dark:text-teal-400" size={ 24 } />
-            <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
+            {/* <Heart className="text-teal-600 dark:text-teal-400" size={ 24 } /> */}
+            {/* <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
               Health Vital
-            </h1>
+            </h1> */}
+            <img src="./src/assets/img/logo-landscape.png" alt="Logo" width={200} height={250} />
           </div>
         </div>
       </header>
