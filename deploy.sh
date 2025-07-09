@@ -59,7 +59,7 @@ RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DEPLOY_URL")
 
 if [ "$RESPONSE" -eq 200 ] || [ "$RESPONSE" -eq 201 ]; then
     echo "✅ Deployment triggered successfully!"
-    echo "🔗 Deployment URL: https://keval-fst-health-vital-backend.hf.space"
+    echo "🔗 Deployment URL: https://health-vitals-tfp9.onrender.com"
 else
     echo "❌ Failed to trigger deployment. Status code: $RESPONSE"
     exit 1

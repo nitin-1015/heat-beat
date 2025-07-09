@@ -228,7 +228,7 @@ function App() {
             console.warn('Received empty WebSocket message');
             return;
           }
-          
+
           // Handle both string and binary data
           let data: HealthMetrics | { type: string };
           if (typeof event.data === 'string') {
@@ -817,7 +817,7 @@ function App() {
       if (metrics.signal_quality !== undefined) {
         setSignalQuality(metrics.signal_quality);
       }
-  
+
       // Update face position if present
       if (metrics.face_position) {
         setFacePosition(metrics.face_position);
@@ -938,7 +938,7 @@ function App() {
           <div className="flex items-center gap-2">
             <Heart className="text-teal-600 dark:text-teal-400" size={ 24 } />
             <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
-              Health Monitor
+              Health Vital
             </h1>
           </div>
         </div>
@@ -949,19 +949,19 @@ function App() {
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
               <CameraView
-                 videoRef={videoRef}
-                 isMonitoring={isMonitoring}
-                 signalQuality={signalQuality}
-                 facePosition={facePosition}
-                 isFaceDetected={isFaceDetected}
-                 faceDetectionError={status}
-                 guidance={[
-                   "Positioned in the center of the frame",
-                   "Facing the camera directly",
-                   "Well-lit with even lighting",
-                   "At arm's length from the camera",
-                   "Not wearing glasses or accessories that cover your face"
-                 ]}
+                videoRef={ videoRef }
+                isMonitoring={ isMonitoring }
+                signalQuality={ signalQuality }
+                facePosition={ facePosition }
+                isFaceDetected={ isFaceDetected }
+                faceDetectionError={ status }
+                guidance={ [
+                  "Positioned in the center of the frame",
+                  "Facing the camera directly",
+                  "Well-lit with even lighting",
+                  "At arm's length from the camera",
+                  "Not wearing glasses or accessories that cover your face"
+                ] }
               />
               {/* WebSocket Connection Status */ }
               {/* <div className="text-xs text-center mb-2">
