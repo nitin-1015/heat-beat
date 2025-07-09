@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Heart, Activity, RefreshCcw } from 'lucide-react';
+import { Activity, RefreshCcw } from 'lucide-react';
 import BPMChart from './components/BPMChart';
 import SpO2Chart from './components/SpO2Chart';
 import HeartRateDisplay from './components/HeartRateDisplay';
@@ -7,6 +7,7 @@ import SpO2Display from './components/SpO2Display';
 import CameraView from './components/CameraView';
 import { VideoProcessor } from './utils/videoProcessor';
 export const MIN_FACE_SIZE = 100; // Minimum face size in pixels
+import logo from './assets/img/logo-landscape.png';
 
 interface HealthMetrics {
   face_detected: boolean;
@@ -940,7 +941,7 @@ function App() {
             {/* <h1 className="text-xl font-semibold text-gray-800 dark:text-white">
               Health Vital
             </h1> */}
-            <img src="./src/assets/img/logo-landscape.png" alt="Logo" width={200} height={250} />
+            <img src={logo} alt="Logo" width={200} height={250} />
           </div>
         </div>
       </header>

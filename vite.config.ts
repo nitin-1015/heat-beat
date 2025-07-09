@@ -4,13 +4,10 @@ import { resolve } from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Load environment variables from .env file and process.env
   const env = {
     VITE_API_URL: process.env.VITE_API_URL || 'https://huggingface.co/spaces/keval-fst/health-vital-backend',
     VITE_WS_URL: process.env.VITE_WS_URL || 'wss://huggingface.co/spaces/keval-fst/health-vital-backend'
   };
-
-  // Log the environment variables for debugging
   console.log('Environment variables in Vite config:', JSON.stringify(env, null, 2));
 
   return {
@@ -45,6 +42,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      assetsDir: 'assets',
       sourcemap: mode !== 'production',
       emptyOutDir: true,
       rollupOptions: {
@@ -55,5 +53,6 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    publicDir: 'src/assets',
   };
 });
